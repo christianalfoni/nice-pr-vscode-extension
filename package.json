@@ -1,0 +1,154 @@
+{
+  "name": "nice-pr",
+  "displayName": "nice-pr",
+  "description": "Make your PR nice for other developers to review",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "nice-pr-sidebar",
+          "title": "Nice PR",
+          "icon": "$(git-pull-request)"
+        }
+      ]
+    },
+    "views": {
+      "nice-pr-sidebar": [
+        {
+          "id": "nicePrView",
+          "name": "Loading..."
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "nicePr.showDiff",
+        "title": "Show commit diff"
+      },
+      {
+        "command": "nicePr.toggleRebaseMode",
+        "title": "Start Rebase",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "nicePr.cancelRebase",
+        "title": "Cancel Rebase",
+        "icon": "$(close)"
+      },
+      {
+        "command": "nicePr.acceptRebase",
+        "title": "Accept Rebase",
+        "icon": "$(check)"
+      },
+      {
+        "command": "nicePr.editCommitMessage",
+        "title": "Edit Commit Message",
+        "category": "Nice PR",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "nicePr.squashCommit",
+        "title": "Squash Commit",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "nicePr.toggleDropCommit",
+        "title": "Toggle Drop Commit",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "nicePr.pushRebase",
+        "title": "Push Rebased Changes",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "nicePr.discardRebase",
+        "title": "Discard Rebase",
+        "icon": "$(discard)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "nicePr.toggleRebaseMode",
+          "when": "view == nicePrView && !nicePr.isRebaseMode && !nicePr.isExecutingRebase",
+          "group": "navigation"
+        },
+        {
+          "command": "nicePr.cancelRebase",
+          "when": "view == nicePrView && nicePr.isRebaseMode && !nicePr.isExecutingRebase",
+          "group": "navigation@1"
+        },
+        {
+          "command": "nicePr.acceptRebase",
+          "when": "view == nicePrView && nicePr.isRebaseMode && !nicePr.isExecutingRebase",
+          "group": "navigation@2"
+        },
+        {
+          "command": "nicePr.pushRebase",
+          "when": "view == nicePrView && nicePr.hasPendingPush",
+          "group": "navigation@1"
+        },
+        {
+          "command": "nicePr.discardRebase",
+          "when": "nicePr.hasPendingPush",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "nicePr.editCommitMessage",
+          "when": "view == nicePrView && viewItem =~ /rebaseMode/ && !nicePr.isExecutingRebase",
+          "group": "inline"
+        },
+        {
+          "command": "nicePr.squashCommit",
+          "when": "view == nicePrView && viewItem == rebaseMode && !nicePr.isExecutingRebase",
+          "group": "inline"
+        },
+        {
+          "command": "nicePr.toggleDropCommit",
+          "when": "view == nicePrView && viewItem =~ /rebaseMode/ && !nicePr.isExecutingRebase",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "yarn run package",
+    "compile": "yarn run check-types && yarn run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "yarn run check-types && yarn run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "yarn run compile-tests && yarn run compile && yarn run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.95.0",
+    "@types/mocha": "^10.0.9",
+    "@types/node": "20.x",
+    "@typescript-eslint/eslint-plugin": "^8.10.0",
+    "@typescript-eslint/parser": "^8.7.0",
+    "eslint": "^9.13.0",
+    "esbuild": "^0.24.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.6.3",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1"
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}
