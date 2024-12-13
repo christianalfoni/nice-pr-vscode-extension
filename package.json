@@ -9,7 +9,9 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:nicePrView"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -24,8 +26,12 @@
     "views": {
       "nice-pr-sidebar": [
         {
+          "id": "nicePrRebaseView",
+          "name": "Rebased Commits"
+        },
+        {
           "id": "nicePrView",
-          "name": "Loading..."
+          "name": "Original Commits"
         }
       ]
     },
@@ -35,9 +41,9 @@
         "title": "Show commit diff"
       },
       {
-        "command": "nicePr.toggleRebaseMode",
+        "command": "nicePr.startRebase",
         "title": "Start Rebase",
-        "icon": "$(git-merge)"
+        "icon": "$(debug-start)"
       },
       {
         "command": "nicePr.cancelRebase",
@@ -45,80 +51,58 @@
         "icon": "$(close)"
       },
       {
-        "command": "nicePr.acceptRebase",
-        "title": "Accept Rebase",
+        "command": "nicePr.approveRebase",
+        "title": "Approve Rebase",
         "icon": "$(check)"
       },
       {
         "command": "nicePr.editCommitMessage",
-        "title": "Edit Commit Message",
-        "category": "Nice PR",
-        "icon": "$(edit)"
+        "title": "Edit Commit Message"
       },
       {
-        "command": "nicePr.squashCommit",
-        "title": "Squash Commit",
-        "icon": "$(eye-closed)"
-      },
-      {
-        "command": "nicePr.toggleDropCommit",
-        "title": "Toggle Drop Commit",
+        "command": "nicePr.removeCommit",
+        "title": "Remove Commit",
         "icon": "$(trash)"
       },
       {
-        "command": "nicePr.pushRebase",
-        "title": "Push Rebased Changes",
-        "icon": "$(cloud-upload)"
+        "command": "nicePr.addCommit",
+        "title": "Add New Commit",
+        "icon": "$(add)"
       },
       {
-        "command": "nicePr.discardRebase",
-        "title": "Discard Rebase",
-        "icon": "$(discard)"
+        "command": "nicePr.showFileDiff",
+        "title": "Show File Changes"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "nicePr.toggleRebaseMode",
-          "when": "view == nicePrView && !nicePr.isRebaseMode && !nicePr.isExecutingRebase",
+          "command": "nicePr.startRebase",
+          "when": "view == nicePrRebaseView && !nicePr.isRebasing",
           "group": "navigation"
         },
         {
           "command": "nicePr.cancelRebase",
-          "when": "view == nicePrView && nicePr.isRebaseMode && !nicePr.isExecutingRebase",
-          "group": "navigation@1"
+          "when": "view == nicePrRebaseView && nicePr.isRebasing",
+          "group": "navigation"
         },
         {
-          "command": "nicePr.acceptRebase",
-          "when": "view == nicePrView && nicePr.isRebaseMode && !nicePr.isExecutingRebase",
-          "group": "navigation@2"
+          "command": "nicePr.approveRebase",
+          "when": "view == nicePrRebaseView && nicePr.isRebasing",
+          "group": "navigation"
         },
         {
-          "command": "nicePr.pushRebase",
-          "when": "view == nicePrView && nicePr.hasPendingPush",
-          "group": "navigation@1"
-        },
-        {
-          "command": "nicePr.discardRebase",
-          "when": "nicePr.hasPendingPush",
+          "command": "nicePr.addCommit",
+          "when": "view == nicePrRebaseView && nicePr.isRebasing",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
-          "command": "nicePr.editCommitMessage",
-          "when": "view == nicePrView && viewItem =~ /rebaseMode/ && !nicePr.isExecutingRebase",
-          "group": "inline"
-        },
-        {
-          "command": "nicePr.squashCommit",
-          "when": "view == nicePrView && viewItem == rebaseMode && !nicePr.isExecutingRebase",
-          "group": "inline"
-        },
-        {
-          "command": "nicePr.toggleDropCommit",
-          "when": "view == nicePrView && viewItem =~ /rebaseMode/ && !nicePr.isExecutingRebase",
-          "group": "inline"
+          "command": "nicePr.removeCommit",
+          "when": "view == nicePrRebaseView && nicePr.isRebasing && viewItem == emptyCommit",
+          "group": "inline",
+          "title": "Remove Empty Commit"
         }
       ]
     }
@@ -138,17 +122,20 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.95.0",
     "@types/mocha": "^10.0.9",
     "@types/node": "20.x",
+    "@types/vscode": "^1.95.0",
     "@typescript-eslint/eslint-plugin": "^8.10.0",
     "@typescript-eslint/parser": "^8.7.0",
-    "eslint": "^9.13.0",
-    "esbuild": "^0.24.0",
-    "npm-run-all": "^4.1.5",
-    "typescript": "^5.6.3",
     "@vscode/test-cli": "^0.0.10",
-    "@vscode/test-electron": "^2.4.1"
+    "@vscode/test-electron": "^2.4.1",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.13.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.6.3"
   },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e",
+  "dependencies": {
+    "diff": "^7.0.0"
+  }
 }
