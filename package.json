@@ -78,29 +78,29 @@
       "view/title": [
         {
           "command": "nicePr.startRebase",
-          "when": "view == nicePrRebaseView && !nicePr.isRebasing",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'IDLE'",
           "group": "navigation"
         },
         {
           "command": "nicePr.cancelRebase",
-          "when": "view == nicePrRebaseView && nicePr.isRebasing",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'REBASING'",
           "group": "navigation"
         },
         {
           "command": "nicePr.approveRebase",
-          "when": "view == nicePrRebaseView && nicePr.isRebasing",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'REBASING'",
           "group": "navigation"
         },
         {
           "command": "nicePr.addCommit",
-          "when": "view == nicePrRebaseView && nicePr.isRebasing",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'REBASING'",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
           "command": "nicePr.removeCommit",
-          "when": "view == nicePrRebaseView && nicePr.isRebasing && viewItem == emptyCommit",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'REBASING' && viewItem == emptyCommit",
           "group": "inline",
           "title": "Remove Empty Commit"
         }
@@ -116,12 +116,13 @@
     "package": "yarn run check-types && yarn run lint && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "yarn run compile-tests && yarn run compile && yarn run lint",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vitest",
+    "test-old": "vscode-test"
   },
   "devDependencies": {
+    "@types/jest": "^29.5.14",
     "@types/mocha": "^10.0.9",
     "@types/node": "20.x",
     "@types/vscode": "^1.95.0",
@@ -132,10 +133,13 @@
     "esbuild": "^0.24.0",
     "eslint": "^9.13.0",
     "npm-run-all": "^4.1.5",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
   },
   "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e",
   "dependencies": {
-    "diff": "^7.0.0"
+    "@types/diff": "^6.0.0",
+    "diff": "^7.0.0",
+    "parse-git-diff": "^0.0.17"
   }
 }
