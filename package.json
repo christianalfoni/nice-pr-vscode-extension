@@ -41,6 +41,10 @@
         "title": "Show commit diff"
       },
       {
+        "command": "nicePr.showRebasedDiff",
+        "title": "Show rebased commit diff"
+      },
+      {
         "command": "nicePr.startRebase",
         "title": "Start Rebase",
         "icon": "$(debug-start)"

@@ -1,11 +1,4 @@
-import * as git from "./git";
-import { applyPatch, applyPatches, Hunk, parsePatch } from "diff";
-
-/**
- * 1. Introduce an apply index, so that we can sort overlapping changes
- * 2. Introduce trash
- * 3. When showing the rebase data, show an error if oldStart is minus
- */
+import { applyPatch, Hunk } from "diff";
 
 import { FileChangeType as ChangeType, isTextFileChange } from "./utils";
 
@@ -13,7 +6,7 @@ export type BaseFileChange = {
   path: string;
   index: number;
   hash: string;
-  dependents: number[];
+  dependencies: number[];
 };
 
 // TODO: When building up the file operations for rebase, read the binary files at the initial hash, which
@@ -115,19 +108,18 @@ export class Rebaser {
       // cause line changes within a hash does not affect the oldStart
       let oldStart = 0;
       let newStart = 0;
-      const dependents: number[] = [];
 
-      for (const originalChange of changes) {
+      for (const previousChange of changes) {
         // We only normalize actual text changes
         if (
-          !isTextFileChange(originalChange) ||
-          originalChange.path !== currentChange.path
+          !isTextFileChange(previousChange) ||
+          previousChange.path !== currentChange.path
         ) {
           continue;
         }
 
         // We only iterate up to the current change
-        if (originalChange.index === currentChange.index) {
+        if (previousChange.index === currentChange.index) {
           break;
         }
 
@@ -135,37 +127,31 @@ export class Rebaser {
         // any overlaps here, because we'll ensure order of overlaps, which will result
         // in the same result
         if (
-          originalChange.oldStart + originalChange.oldLines >
+          previousChange.oldStart + previousChange.oldLines >
           currentChange.oldStart
         ) {
           continue;
         }
 
-        const lineStart = originalChange.oldStart;
-        const lineChanges = originalChange.newLines - originalChange.oldLines;
-        const lineEnd = originalChange.oldStart + lineChanges;
+        const lineChanges = previousChange.newLines - previousChange.oldLines;
 
-        // When we find a dependent change, we do not use it to normalize
-        // the current change
-        if (
-          currentChange.oldStart >= lineStart &&
-          currentChange.oldStart <= lineEnd
-        ) {
-          dependents.push(originalChange.index);
+        // If previous change is a dependency of the current change, we do not
+        // normalize, as you can not move this change in front of the previous. This
+        // manages the complicated nature of overlapping changes
+        if (currentChange.dependencies.includes(previousChange.index)) {
           continue;
         }
 
         newStart += lineChanges;
 
         // Any commits before the current hash will affect the starting position
-        if (originalChange.hash !== currentChange.hash) {
+        if (previousChange.hash !== currentChange.hash) {
           oldStart += lineChanges;
         }
       }
 
       currentChange.oldStart -= oldStart;
       currentChange.newStart -= newStart;
-      currentChange.dependents = dependents;
     }
 
     return normalizedChanges;
@@ -178,9 +164,27 @@ export class Rebaser {
       const bIndex = this._commits.findIndex(
         (commit) => commit.hash === b.hash
       );
+      const isSameFile = a.path === b.path;
+      const isSameHash = a.hash === b.hash;
+      const isSameFileAndHash = isSameFile && isSameHash;
+
+      // Actual file operation changes should always come first
+      if (
+        isSameFileAndHash &&
+        a.type !== ChangeType.MODIFY &&
+        b.type === ChangeType.MODIFY
+      ) {
+        return -1;
+      } else if (
+        isSameFileAndHash &&
+        a.type === ChangeType.MODIFY &&
+        b.type !== ChangeType.MODIFY
+      ) {
+        return 1;
+      }
 
       if (
-        a.hash === b.hash &&
+        isSameFileAndHash &&
         a.type === ChangeType.MODIFY &&
         b.type === ChangeType.MODIFY &&
         a.fileType === "text" &&
@@ -283,7 +287,7 @@ export class Rebaser {
         // we do not adjust the starting position if the previous change is a dependent
         if (
           previousChange.oldStart < change.oldStart &&
-          !change.dependents.includes(previousChange.index)
+          !change.dependencies.includes(previousChange.index)
         ) {
           // We'll always increase the currentLineChangesCount
           currentLineChangesCount +=
@@ -327,13 +331,16 @@ export class Rebaser {
 
       let isSetBeforeDependent = false;
 
-      if (change.dependents.length) {
-        for (const dependent of change.dependents) {
+      if (change.dependencies.length) {
+        for (const dependency of change.dependencies) {
           const dependentIndex = changesCopy.findIndex(
-            (otherChange) => otherChange.index === dependent
+            (otherChange) => otherChange.index === dependency
           );
+          const changeIndex = changesCopy.indexOf(change);
+          const isInTrash = dependentIndex === -1;
 
-          if (dependentIndex > changesCopy.indexOf(change)) {
+          console.log("WTF", change, changeIndex, isInTrash);
+          if (dependentIndex > changeIndex || isInTrash) {
             isSetBeforeDependent = true;
             break;
           }

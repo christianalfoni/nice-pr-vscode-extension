@@ -105,12 +105,19 @@ export function getLineChanges(change: FileChange) {
     : [];
 }
 
-export function mapChunkToFileChange(
-  chunk: AnyChunk,
-  hash: string,
-  path: string,
-  index: number
-): FileChange {
+export function mapChunkToFileChange({
+  chunk,
+  hash,
+  path,
+  index,
+  dependencies,
+}: {
+  chunk: AnyChunk;
+  hash: string;
+  path: string;
+  index: number;
+  dependencies: number[];
+}): FileChange {
   if (chunk.type === "CombinedChunk") {
     throw new Error("Combined chunk not supported");
   }
@@ -121,19 +128,17 @@ export function mapChunkToFileChange(
       type: FileChangeType.MODIFY,
       fileType: "binary",
       index,
-      dependents: [],
+      dependencies,
       hash,
       path,
     };
   }
 
-  console.log("CHUNK", chunk);
-
   return {
     type: FileChangeType.MODIFY,
     fileType: "text",
     index,
-    dependents: [],
+    dependencies,
     hash,
     path,
     oldStart: chunk.fromFileRange.start,
@@ -186,7 +191,6 @@ export function toGitUri(
 }
 
 export function toMultiFileDiffEditorUris(
-  uri: vscode.Uri,
   change: Change,
   originalRef: string,
   modifiedRef: string
@@ -215,5 +219,24 @@ export function toMultiFileDiffEditorUris(
         originalUri: toGitUri(change.uri, originalRef),
         modifiedUri: toGitUri(change.uri, modifiedRef),
       };
+  }
+}
+
+export function isLineOverlappingWithChange(
+  line: number,
+  previousChange: FileChange
+) {
+  if (!isTextFileChange(previousChange)) {
+    return false;
+  }
+
+  const lineStart = previousChange.oldStart;
+  const lineChanges = previousChange.newLines - previousChange.oldLines;
+  const lineEnd = previousChange.oldStart + lineChanges;
+
+  // When we find a dependent change, we do not use it to normalize
+  // the current change
+  if (line >= lineStart && line <= lineEnd) {
+    return true;
   }
 }

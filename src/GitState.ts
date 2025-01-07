@@ -7,10 +7,10 @@ import {
   FileChangeType,
   getFileOperationChangeFromChanges as getFileOperationChangeFromChanges,
   getParentCommitHash,
+  isLineOverlappingWithChange,
   mapChunkToFileChange,
   toMultiFileDiffEditorUris,
 } from "./utils";
-import { parsePatch } from "diff";
 import { join } from "path";
 import parseGitDiff from "parse-git-diff";
 
@@ -102,6 +102,12 @@ type RebaseCommitOperation = {
   fileOperations: RebaseFileOperation[];
 };
 
+type ShowFileDiffOptions = {
+  fileName: string;
+  hash: string;
+  selection?: { from: number; to: number };
+};
+
 export class GitState {
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
@@ -124,7 +130,7 @@ export class GitState {
     this._onDidChange.fire();
   }
 
-  private get mode() {
+  get mode() {
     return this._mode;
   }
 
@@ -252,7 +258,7 @@ export class GitState {
   }
 
   getRebaser() {
-    if (this.mode.mode !== "REBASING") {
+    if (this.mode.mode === "IDLE") {
       throw new Error("No rebaser available");
     }
 
@@ -296,26 +302,18 @@ export class GitState {
         let fileChanges: FileChange[] = [];
 
         for (const { diff, commit } of diffs) {
-          for (const change of diff) {
-            switch (change.type) {
+          for (const diffChange of diff) {
+            switch (diffChange.type) {
               case "AddedFile": {
                 fileChanges = [
                   ...fileChanges,
                   {
                     type: FileChangeType.ADD,
                     index: changeIndex++,
-                    dependents: [],
+                    dependencies: [],
                     hash: commit.hash,
-                    path: change.path,
+                    path: diffChange.path,
                   },
-                  ...change.chunks.map((chunk) =>
-                    mapChunkToFileChange(
-                      chunk,
-                      commit.hash,
-                      change.path,
-                      changeIndex++
-                    )
-                  ),
                 ];
                 break;
               }
@@ -325,10 +323,14 @@ export class GitState {
                   {
                     type: FileChangeType.DELETE,
                     index: changeIndex++,
-                    // TODO: This depends on any other changes to this file
-                    dependents: [],
+                    // A deletion of a file depends on any changes made before the deletion
+                    dependencies: fileChanges
+                      .filter(
+                        (prevChange) => prevChange.path === diffChange.path
+                      )
+                      .map((prevChange) => prevChange.index),
                     hash: commit.hash,
-                    path: change.path,
+                    path: diffChange.path,
                   },
                 ];
                 break;
@@ -339,43 +341,60 @@ export class GitState {
                   {
                     type: FileChangeType.RENAME,
                     index: changeIndex++,
-                    // TODO: This depends on any other changes to the before path of this file, but we'll
-                    // handle this in the Rebaser
-                    dependents: [],
+                    // Renames depend on the previous file path changes
+                    dependencies: fileChanges
+                      .filter(
+                        (prevChange) =>
+                          prevChange.path === diffChange.pathBefore
+                      )
+                      .map((prevChange) => prevChange.index),
                     hash: commit.hash,
-                    oldFileName: change.pathBefore,
-                    path: change.pathAfter,
+                    oldFileName: diffChange.pathBefore,
+                    path: diffChange.pathAfter,
                   },
-                  ...change.chunks.map((chunk) =>
-                    mapChunkToFileChange(
-                      chunk,
-                      commit.hash,
-                      change.pathAfter,
-                      changeIndex++
-                    )
-                  ),
-                ];
-                break;
-              }
-              case "ChangedFile": {
-                fileChanges = [
-                  ...fileChanges,
-                  ...change.chunks.map((chunk) =>
-                    mapChunkToFileChange(
-                      chunk,
-                      commit.hash,
-                      change.path,
-                      changeIndex++
-                    )
-                  ),
                 ];
                 break;
               }
             }
+
+            // We do not care about the actual changes for a deleted file, as
+            // the developer intended to delete the file in whatever state it was
+            if (diffChange.type === "DeletedFile") {
+              break;
+            }
+
+            const path =
+              diffChange.type === "RenamedFile"
+                ? diffChange.pathAfter
+                : diffChange.path;
+
+            fileChanges = [
+              ...fileChanges,
+              ...diffChange.chunks.map((chunk) =>
+                mapChunkToFileChange({
+                  chunk,
+                  hash: commit.hash,
+                  path,
+                  index: changeIndex++,
+                  dependencies: fileChanges
+                    .filter(
+                      (prevChange) =>
+                        (prevChange.path === path &&
+                          // Adding a file, renaming it or having overlapping changes means we depend on the previous change
+                          prevChange.type === FileChangeType.ADD) ||
+                        prevChange.type === FileChangeType.RENAME ||
+                        (chunk.type === "Chunk" &&
+                          isLineOverlappingWithChange(
+                            chunk.fromFileRange.start,
+                            prevChange
+                          ))
+                    )
+                    .map((prevChange) => prevChange.index),
+                })
+              ),
+            ];
           }
         }
-
-        console.log(fileChanges);
 
         this.mode = {
           mode: "REBASING",
@@ -386,6 +405,18 @@ export class GitState {
       case "READY_TO_PUSH": {
         if (this.mode.mode !== "REBASING") {
           throw new Error("Can not push without rebasing");
+        }
+
+        const rebasedCommits = this.mode.rebaser.getRebaseCommits();
+        const invalidCommit = rebasedCommits.find(
+          (commit) => commit.hasChangeSetBeforeDependent
+        );
+
+        if (invalidCommit) {
+          vscode.window.showErrorMessage(
+            `Invalid commit detected: ${invalidCommit.message}. The commit has changes depending on later changes.`
+          );
+          return;
         }
 
         // TODO: Verify here that we do not have any wrong overlapping changes
@@ -448,13 +479,62 @@ export class GitState {
     }[] = [];
     for (const change of changes) {
       resources.push(
-        toMultiFileDiffEditorUris(
-          change.renameUri || change.originalUri,
-          change,
-          commitParentId,
-          commit.hash
-        )
+        toMultiFileDiffEditorUris(change, commitParentId, commit.hash)
       );
+    }
+
+    await vscode.commands.executeCommand(
+      "_workbench.openMultiDiffEditor",
+      {
+        multiDiffSourceUri,
+        title,
+        resources,
+      },
+      {
+        preserveFocus: true,
+        preview: true,
+        viewColumn: vscode.ViewColumn.Active,
+      }
+    );
+  }
+
+  async showRebasedCommitDiff(commit: {
+    message: string;
+    hash: string;
+  }): Promise<void> {
+    if (!this._api) {
+      return;
+    }
+
+    const rebaser = this.getRebaser();
+    const repo = this.getRepo();
+    const commitParentId = `${commit.hash}^`;
+    const title = `${commit.message} (${commit.hash.substring(0, 7)})`;
+    const multiDiffSourceUri = vscode.Uri.from({
+      scheme: "scm-history-item",
+      path: `${repo.rootUri.path}/rebased/${commitParentId}..${commit.hash}`,
+    });
+    const rebasedCommit = rebaser
+      .getRebaseCommits()
+      .find((rebasedCommit) => rebasedCommit.hash === commit.hash);
+
+    if (!rebasedCommit) {
+      throw new Error("Commit not found in rebased commits");
+    }
+
+    const resources: {
+      originalUri: vscode.Uri | undefined;
+      modifiedUri: vscode.Uri | undefined;
+    }[] = [];
+    for (const file of rebasedCommit.files) {
+      const { leftUri, rightUri } = await this.generateDiffUris({
+        fileName: file.fileName,
+        hash: commit.hash,
+      });
+      resources.push({
+        originalUri: leftUri,
+        modifiedUri: rightUri,
+      });
     }
 
     await vscode.commands.executeCommand(
@@ -505,11 +585,7 @@ export class GitState {
     }
   }
 
-  async showFileDiff(
-    fileName: string,
-    ref: string,
-    selection?: { from: number; to: number }
-  ) {
+  async showFileDiff({ fileName, hash: ref, selection }: ShowFileDiffOptions) {
     const activeDiffHashesForFile =
       this._activeDiffs.get(fileName) || new Set();
 
@@ -518,20 +594,13 @@ export class GitState {
     this._activeDiffs.set(fileName, activeDiffHashesForFile);
 
     // Get original file contents and show diff
-    await this.updateDiffView(fileName, ref, selection);
+    await this.updateDiffView({ fileName, hash: ref, selection });
   }
 
-  async updateDiffView(
-    fileName: string,
-    hash: string,
-    selection?: { from: number; to: number }
-  ) {
-    const existingView = this._activeDiffs.has(fileName);
-
-    if (!existingView) {
-      return;
-    }
-
+  private async generateDiffUris({
+    fileName,
+    hash,
+  }: Omit<ShowFileDiffOptions, "selection">) {
     const leftUri = vscode.Uri.parse(
       `nice-pr-diff://original/${hash}/${fileName}`
     );
@@ -539,9 +608,20 @@ export class GitState {
       `nice-pr-diff://modified/${hash}/${fileName}`
     );
 
-    const originalContent = await this.getInitialFileContents(fileName);
-
     const rebaser = this.getRebaser();
+    const changesForFile = rebaser.getChangesForFileByHash(fileName, hash);
+
+    // If the current hash renames the file, we need to pass the old file name
+    // to get the initial contents of the file at this hash to apply any modifications
+    const oldFileName =
+      changesForFile[0]?.type === FileChangeType.RENAME
+        ? changesForFile[0].oldFileName
+        : undefined;
+
+    // With renames we need to get the contents by the previous file name
+    const originalContent = await this.getInitialFileContents(
+      oldFileName || fileName
+    );
 
     const changes = rebaser.getChangesForFileByHash(fileName, hash);
     const changesInHash = changes.filter((change) => change.hash === hash);
@@ -563,6 +643,21 @@ export class GitState {
     this._contentProvider.clear(rightUri);
     this._contentProvider.setContent(leftUri, contentBeforeHash);
     this._contentProvider.setContent(rightUri, contentInHash);
+
+    return { leftUri, rightUri };
+  }
+
+  async updateDiffView({ fileName, hash, selection }: ShowFileDiffOptions) {
+    const existingView = this._activeDiffs.has(fileName);
+
+    if (!existingView) {
+      return;
+    }
+
+    const { leftUri, rightUri } = await this.generateDiffUris({
+      fileName,
+      hash,
+    });
 
     vscode.commands.executeCommand(
       "vscode.diff",
@@ -637,8 +732,6 @@ export class GitState {
         };
       })
     );
-
-    console.log("Commit operations:", commits, commitOperations);
 
     await executeGitCommand(
       this.getRepo(),

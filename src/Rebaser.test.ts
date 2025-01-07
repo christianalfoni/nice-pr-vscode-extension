@@ -27,7 +27,7 @@ describe("Rebaser", () => {
           oldLines: 1,
           newLines: 1,
           lines: ["-foo", "+bar"],
-          dependents: [],
+          dependencies: [],
         },
       ];
       const rebaser = new Rebaser("foo", commits, { "package.json": changes });
@@ -72,7 +72,7 @@ describe("Rebaser", () => {
           oldLines: 1,
           newLines: 1,
           lines: ["-foo", "+bar"],
-          dependents: [],
+          dependencies: [],
         },
       ];
 
@@ -86,7 +86,7 @@ describe("Rebaser", () => {
           oldLines: 0,
           newLines: 2,
           lines: ["+# Project", "+Description"],
-          dependents: [],
+          dependencies: [],
         },
       ];
 
@@ -152,7 +152,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 3, // Adding 2 new lines
         lines: ["-original", "+modified", "+new line 1", "+new line 2"],
-        dependents: [],
+        dependencies: [],
       },
       {
         index: 1,
@@ -163,7 +163,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 1,
         lines: ["-old content", "+new content"],
-        dependents: [],
+        dependencies: [],
       },
     ];
 
@@ -247,7 +247,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 3, // Adding 2 new lines
         lines: ["-original", "+modified", "+new line 1", "+new line 2"],
-        dependents: [],
+        dependencies: [],
       },
       {
         index: 1,
@@ -258,7 +258,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 1,
         lines: ["-old content", "+new content"],
-        dependents: [],
+        dependencies: [],
       },
     ];
 
@@ -345,7 +345,7 @@ describe("Rebaser", () => {
           "-to be removed 2",
           "+modified",
         ],
-        dependents: [],
+        dependencies: [],
       },
       {
         index: 1,
@@ -356,7 +356,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 1,
         lines: ["-old content", "+new content"],
-        dependents: [],
+        dependencies: [],
       },
     ];
 
@@ -426,7 +426,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 3, // Adding 2 new lines
         lines: ["-original", "+modified", "+new line 1", "+new line 2"],
-        dependents: [],
+        dependencies: [],
       },
       {
         index: 1,
@@ -437,7 +437,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 1,
         lines: ["-old content", "+new content"],
-        dependents: [],
+        dependencies: [],
       },
     ];
 
@@ -508,7 +508,7 @@ describe("Rebaser", () => {
         oldLines: 3,
         newLines: 1, // Removing 2 lines
         lines: ["-line 1", "-line 2", "-line 3", "+modified line"],
-        dependents: [],
+        dependencies: [],
       },
       {
         index: 1,
@@ -519,7 +519,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 1,
         lines: ["-old content", "+new content"],
-        dependents: [],
+        dependencies: [],
       },
     ];
 
@@ -592,7 +592,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 3,
         lines: ["-line2", "+newline2", "+inserted1", "+inserted2"],
-        dependents: [],
+        dependencies: [],
       },
       {
         index: 1,
@@ -603,7 +603,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 1,
         lines: ["-line4", "+modified4"],
-        dependents: [],
+        dependencies: [],
       },
     ];
 
@@ -650,7 +650,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 3,
         lines: ["-line2", "+newline2", "+inserted1", "+inserted2"],
-        dependents: [],
+        dependencies: [],
       },
       {
         index: 1,
@@ -661,7 +661,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 1,
         lines: ["-line4", "+modified4"],
-        dependents: [],
+        dependencies: [],
       },
     ];
 
@@ -702,7 +702,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 2,
         lines: ["-line2", "+newline2", "+inserted1"],
-        dependents: [],
+        dependencies: [],
       },
     ];
 
@@ -734,7 +734,7 @@ describe("Rebaser", () => {
       oldLines: 1,
       newLines: 2,
       lines: ["-line2", "+newline2", "+inserted1"],
-      dependents: [],
+      dependencies: [],
     };
 
     const rebaser = new Rebaser("foo", commits, {
@@ -784,7 +784,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 3, // Adding 2 new lines
         lines: ["-original", "+modified", "+new line 1", "+new line 2"],
-        dependents: [],
+        dependencies: [],
       },
       {
         index: 1,
@@ -795,7 +795,7 @@ describe("Rebaser", () => {
         oldLines: 1,
         newLines: 1,
         lines: ["-old content", "+new content"],
-        dependents: [],
+        dependencies: [],
       },
     ];
 
@@ -858,7 +858,7 @@ describe("Rebaser", () => {
               {
                 ...changes[1],
                 hash: commit1.hash,
-                dependents: [0],
+                dependencies: [0],
                 isSetBeforeDependent: true,
               },
             ],

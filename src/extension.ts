@@ -1,15 +1,14 @@
 import * as vscode from "vscode";
 
 /*
-  - Implement dependencies:
-    - Any additions of a file should be a dependency of all modifications of that file (after index)
-    - Any renames of a file should be a dependency of all modifications of that file (after index)
-    - Any deletions should have dependencies on all modifications of that file (before index)
-    - Move overlap dependencies to same logic
   - After approved rebase show rebased commits in the tree view, but only the commits
   - Show command for dropping the rebase (checkeout to remote)
   - Show command for force pushing the rebase to remote with lease
   - Show command for keep editing the rebase
+  - Write tests using diff strings
+  - Create backup branch with a known prefix to identify if a backup is available. Run the backup as part
+  of the rebase + push process. Make sure the back is kept up to date if already exists
+  - Remember the trash! Test everything related to trash
 */
 
 import {
@@ -86,6 +85,11 @@ interface RebaseCommitItem {
   commit: RebaseCommit;
 }
 
+interface RebasedCommitItem {
+  type: "rebasedCommit";
+  commit: RebaseCommit;
+}
+
 interface RebaseFileItem {
   type: "file";
   file: RebaseCommitFile;
@@ -103,6 +107,7 @@ interface RebaseChangeItem {
 }
 
 type RebaseTreeItem =
+  | RebasedCommitItem
   | TrashItem
   | RebaseCommitItem
   | RebaseFileItem
@@ -150,7 +155,16 @@ class RebaseTreeDataProvider
       this.dragMimeTypes[0]
     )?.value;
 
-    if (!source || source.type === "trash") {
+    if (!source) {
+      return;
+    }
+
+    // You can not drag and drop rebased commits
+    if (source.type === "rebasedCommit" || target.type === "rebasedCommit") {
+      return;
+    }
+
+    if (source.type === "trash") {
       return;
     }
 
@@ -168,7 +182,7 @@ class RebaseTreeDataProvider
       fileNames.forEach((fileName) => {
         const hashesForFile = rebaser.getHashesForFile(fileName);
         hashesForFile.forEach((hash) => {
-          this.gitState.updateDiffView(fileName, hash);
+          this.gitState.updateDiffView({ fileName, hash });
         });
       });
       return;
@@ -196,11 +210,27 @@ class RebaseTreeDataProvider
 
     this._onDidChangeTreeData.fire(undefined);
 
-    this.gitState.updateDiffView(source.fileName, source.ref);
+    this.gitState.updateDiffView({
+      fileName: source.fileName,
+      hash: source.ref,
+    });
   }
 
   // This is where we RENDER the tree item
   async getTreeItem(element: RebaseTreeItem): Promise<vscode.TreeItem> {
+    if (element.type === "rebasedCommit") {
+      const item = new vscode.TreeItem(element.commit.message);
+      item.iconPath = new vscode.ThemeIcon("git-commit");
+      item.contextValue = "droppableCommit";
+      item.command = {
+        command: "nicePr.showRebasedDiff",
+        title: "Show rebased diff",
+        // @ts-ignore
+        arguments: [element.commit],
+      };
+      return item;
+    }
+
     if (
       element.type === "change" &&
       element.change.type === FileChangeType.ADD
@@ -265,7 +295,7 @@ class RebaseTreeDataProvider
 
       const item = new vscode.TreeItem(
         fileName,
-        vscode.TreeItemCollapsibleState.Expanded
+        vscode.TreeItemCollapsibleState.Collapsed
       );
 
       item.description = vscode.workspace.asRelativePath(parts.join("/"));
@@ -342,12 +372,20 @@ class RebaseTreeDataProvider
 
   // This is where we build up the tree items
   async getChildren(element?: RebaseTreeItem): Promise<RebaseTreeItem[]> {
-    if (!this.gitState.isRebasing) {
+    const mode = this.gitState.mode;
+
+    if (mode.mode === "IDLE") {
       return [];
     }
 
-    const rebaser = this.gitState.getRebaser();
+    const rebaser = mode.rebaser;
     const rebaseCommits = rebaser.getRebaseCommits();
+
+    if (mode.mode === "READY_TO_PUSH") {
+      return rebaseCommits
+        .filter((commit) => Boolean(commit.files.length))
+        .map((commit) => ({ type: "rebasedCommit", commit }));
+    }
 
     if (!element) {
       return [
@@ -399,7 +437,15 @@ class RebaseTreeDataProvider
   }
 
   refresh(): void {
-    this.view.title = "Rebase Changes";
+    let title = "Waiting to rebase";
+
+    if (this.gitState.mode.mode === "REBASING") {
+      title = "Rebasing";
+    } else if (this.gitState.mode.mode === "READY_TO_PUSH") {
+      title = "Review and Push";
+    }
+
+    this.view.title = title;
     this._onDidChangeTreeData.fire(undefined);
   }
 }
@@ -413,6 +459,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("nicePr.showDiff", (commit: CommitItem) =>
       gitState.showCommitDiff(commit)
     ),
+    vscode.commands.registerCommand(
+      "nicePr.showRebasedDiff",
+      (commit: CommitItem) => gitState.showRebasedCommitDiff(commit)
+    ),
     vscode.commands.registerCommand("nicePr.startRebase", () => {
       gitState.setRebaseMode("REBASING");
     }),
@@ -420,8 +470,7 @@ export async function activate(context: vscode.ExtensionContext) {
       gitState.setRebaseMode("IDLE");
     }),
     vscode.commands.registerCommand("nicePr.approveRebase", () => {
-      // TODO: Implement running the rebase locally
-      gitState.rebase();
+      gitState.setRebaseMode("READY_TO_PUSH");
     }),
     vscode.commands.registerCommand(
       "nicePr.editCommitMessage",
@@ -465,21 +514,22 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         // Add this as well to the click of a hunk, though pass the selection
-        return gitState.showFileDiff(
-          item.fileName,
-          item.ref,
-          item.type === "change" &&
+        return gitState.showFileDiff({
+          fileName: item.fileName,
+          hash: item.ref,
+          selection:
+            item.type === "change" &&
             item.change.type === FileChangeType.MODIFY &&
             item.change.fileType === "text"
-            ? {
-                from: item.change.newStart,
-                to:
-                  item.change.newStart +
-                  (item.change.oldLines || item.change.newLines) -
-                  1,
-              }
-            : undefined
-        );
+              ? {
+                  from: item.change.newStart,
+                  to:
+                    item.change.newStart +
+                    (item.change.oldLines || item.change.newLines) -
+                    1,
+                }
+              : undefined,
+        });
       }
     )
   );
