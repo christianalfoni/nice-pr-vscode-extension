@@ -1,20 +1,74 @@
 import * as vscode from "vscode";
-import { API, Commit, Repository } from "./git";
+import { API, Change, Commit, Repository, Status } from "./git";
 import * as cp from "child_process";
-import { FileChange, Rebaser } from "./Rebaser";
+import { Rebaser } from "./Rebaser";
 import { promisify } from "util";
 import {
   FileChangeType,
   getFileOperationChangeFromChanges as getFileOperationChangeFromChanges,
   getParentCommitHash,
-  isLineOverlappingWithChange,
-  mapChunkToFileChange,
-  toMultiFileDiffEditorUris,
 } from "./utils";
 import { join } from "path";
-import parseGitDiff from "parse-git-diff";
 
 const execAsync = promisify(cp.exec);
+
+interface GitUriParams {
+  path: string;
+  ref: string;
+}
+
+interface GitUriOptions {
+  scheme?: string;
+}
+
+export function toGitUri(
+  uri: vscode.Uri,
+  ref: string,
+  options: GitUriOptions = {}
+): vscode.Uri {
+  const params: GitUriParams = {
+    path: uri.fsPath,
+    ref,
+  };
+
+  return uri.with({
+    scheme: options.scheme ?? "git",
+    path: uri.path,
+    query: JSON.stringify(params),
+  });
+}
+
+export function toMultiFileDiffEditorUris(
+  change: Change,
+  originalRef: string,
+  modifiedRef: string
+): {
+  originalUri: vscode.Uri | undefined;
+  modifiedUri: vscode.Uri | undefined;
+} {
+  switch (change.status) {
+    case Status.INDEX_ADDED:
+      return {
+        originalUri: undefined,
+        modifiedUri: toGitUri(change.uri, modifiedRef),
+      };
+    case Status.DELETED:
+      return {
+        originalUri: toGitUri(change.uri, originalRef),
+        modifiedUri: undefined,
+      };
+    case Status.INDEX_RENAMED:
+      return {
+        originalUri: toGitUri(change.originalUri, originalRef),
+        modifiedUri: toGitUri(change.uri, modifiedRef),
+      };
+    default:
+      return {
+        originalUri: toGitUri(change.uri, originalRef),
+        modifiedUri: toGitUri(change.uri, modifiedRef),
+      };
+  }
+}
 
 // Add these helper functions at the top of the file
 async function executeGitCommand(
@@ -78,6 +132,9 @@ type RebaseMode =
   | {
       mode: "READY_TO_PUSH";
       rebaser: Rebaser;
+    }
+  | {
+      mode: "PUSHING";
     };
 
 type RebaseFileOperation =
@@ -258,7 +315,7 @@ export class GitState {
   }
 
   getRebaser() {
-    if (this.mode.mode === "IDLE") {
+    if (this.mode.mode === "IDLE" || this.mode.mode === "PUSHING") {
       throw new Error("No rebaser available");
     }
 
@@ -279,11 +336,11 @@ export class GitState {
             mode: "REBASING",
             rebaser: this.mode.rebaser,
           };
+          return;
         }
 
         const repo = this.getRepo();
 
-        // We grab the changes for each commit, which represents the files affected
         const diffs = await Promise.all(
           this._commits
             .slice()
@@ -292,113 +349,13 @@ export class GitState {
               executeGitCommand(
                 repo,
                 `diff --unified=0 ${getParentCommitHash(commit)} ${commit.hash}`
-              ).then((diff) => ({ commit, diff: parseGitDiff(diff).files }))
+              ).then((diff) => ({ commit, diff }))
             )
         );
 
-        // Then we group the changes by file. We do not actually care about the type of change,
-        // the hunks themselves represents the actual changes to apply
-        let changeIndex = 0;
-        let fileChanges: FileChange[] = [];
-
-        for (const { diff, commit } of diffs) {
-          for (const diffChange of diff) {
-            switch (diffChange.type) {
-              case "AddedFile": {
-                fileChanges = [
-                  ...fileChanges,
-                  {
-                    type: FileChangeType.ADD,
-                    index: changeIndex++,
-                    dependencies: [],
-                    hash: commit.hash,
-                    path: diffChange.path,
-                  },
-                ];
-                break;
-              }
-              case "DeletedFile": {
-                fileChanges = [
-                  ...fileChanges,
-                  {
-                    type: FileChangeType.DELETE,
-                    index: changeIndex++,
-                    // A deletion of a file depends on any changes made before the deletion
-                    dependencies: fileChanges
-                      .filter(
-                        (prevChange) => prevChange.path === diffChange.path
-                      )
-                      .map((prevChange) => prevChange.index),
-                    hash: commit.hash,
-                    path: diffChange.path,
-                  },
-                ];
-                break;
-              }
-              case "RenamedFile": {
-                fileChanges = [
-                  ...fileChanges,
-                  {
-                    type: FileChangeType.RENAME,
-                    index: changeIndex++,
-                    // Renames depend on the previous file path changes
-                    dependencies: fileChanges
-                      .filter(
-                        (prevChange) =>
-                          prevChange.path === diffChange.pathBefore
-                      )
-                      .map((prevChange) => prevChange.index),
-                    hash: commit.hash,
-                    oldFileName: diffChange.pathBefore,
-                    path: diffChange.pathAfter,
-                  },
-                ];
-                break;
-              }
-            }
-
-            // We do not care about the actual changes for a deleted file, as
-            // the developer intended to delete the file in whatever state it was
-            if (diffChange.type === "DeletedFile") {
-              break;
-            }
-
-            const path =
-              diffChange.type === "RenamedFile"
-                ? diffChange.pathAfter
-                : diffChange.path;
-
-            fileChanges = [
-              ...fileChanges,
-              ...diffChange.chunks.map((chunk) =>
-                mapChunkToFileChange({
-                  chunk,
-                  hash: commit.hash,
-                  path,
-                  index: changeIndex++,
-                  dependencies: fileChanges
-                    .filter(
-                      (prevChange) =>
-                        (prevChange.path === path &&
-                          // Adding a file, renaming it or having overlapping changes means we depend on the previous change
-                          prevChange.type === FileChangeType.ADD) ||
-                        prevChange.type === FileChangeType.RENAME ||
-                        (chunk.type === "Chunk" &&
-                          isLineOverlappingWithChange(
-                            chunk.fromFileRange.start,
-                            prevChange
-                          ))
-                    )
-                    .map((prevChange) => prevChange.index),
-                })
-              ),
-            ];
-          }
-        }
-
         this.mode = {
           mode: "REBASING",
-          rebaser: new Rebaser(this.getBranch(), this._commits, fileChanges),
+          rebaser: new Rebaser(diffs),
         };
         return;
       }
@@ -423,6 +380,20 @@ export class GitState {
         this.mode = {
           mode: "READY_TO_PUSH",
           rebaser: this.mode.rebaser,
+        };
+      }
+      case "PUSHING": {
+        if (this.mode.mode !== "READY_TO_PUSH") {
+          throw new Error("Can not push without rebasing");
+        }
+
+        await this.rebase();
+        await executeGitCommand(
+          this.getRepo(),
+          `push origin ${this._branch} --force-with-lease`
+        );
+        this.mode = {
+          mode: "IDLE",
         };
       }
     }
@@ -568,17 +539,34 @@ export class GitState {
     return mergeBase;
   }
 
-  private async getInitialFileContents(filePath: string): Promise<string> {
+  private async getInitialFileContents(
+    fileName: string,
+    hash: string
+  ): Promise<string> {
     if (!this._api || !this._branch) {
       return "";
     }
 
-    const repo = this._api.repositories[0];
+    const repo = this.getRepo();
+    const changesForFile = this.getRebaser().getChangesForFileByHash(
+      fileName,
+      hash
+    );
+
+    // If the current hash renames the file, we need to pass the old file name
+    // to get the initial contents of the file at this hash to apply any modifications
+    const oldFileName =
+      changesForFile[0]?.type === FileChangeType.RENAME
+        ? changesForFile[0].oldFileName
+        : undefined;
 
     try {
       const mergeBase = await this.getInitialHash();
       // Use executeGitCommand to get the file content from the merge base
-      return await executeGitCommand(repo, `show ${mergeBase}:${filePath}`);
+      return await executeGitCommand(
+        repo,
+        `show ${mergeBase}:${oldFileName || fileName}`
+      );
     } catch (error) {
       console.error("Failed to get file contents:", error);
       return "";
@@ -609,19 +597,9 @@ export class GitState {
     );
 
     const rebaser = this.getRebaser();
-    const changesForFile = rebaser.getChangesForFileByHash(fileName, hash);
-
-    // If the current hash renames the file, we need to pass the old file name
-    // to get the initial contents of the file at this hash to apply any modifications
-    const oldFileName =
-      changesForFile[0]?.type === FileChangeType.RENAME
-        ? changesForFile[0].oldFileName
-        : undefined;
 
     // With renames we need to get the contents by the previous file name
-    const originalContent = await this.getInitialFileContents(
-      oldFileName || fileName
-    );
+    const originalContent = await this.getInitialFileContents(fileName, hash);
 
     const changes = rebaser.getChangesForFileByHash(fileName, hash);
     const changesInHash = changes.filter((change) => change.hash === hash);
@@ -691,7 +669,7 @@ export class GitState {
             commit.files.map((file) =>
               Promise.resolve(
                 fileStates[file.fileName] ||
-                  this.getInitialFileContents(file.fileName)
+                  this.getInitialFileContents(file.fileName, commit.hash)
               )
                 // There is no file yet, so we use empty string as initial content
                 .catch(() => "")
@@ -738,6 +716,16 @@ export class GitState {
       `reset --hard ${await this.getInitialHash()}`
     );
 
+    async function ensureDirectoryExists(filePath: vscode.Uri) {
+      try {
+        await vscode.workspace.fs.createDirectory(
+          vscode.Uri.joinPath(filePath, "..")
+        );
+      } catch (err) {
+        // Directory might already exist, which is fine
+      }
+    }
+
     for (const commitOperation of commitOperations) {
       for (const fileOperation of commitOperation.fileOperations) {
         const workspacePath = this.getRepo().rootUri.fsPath;
@@ -747,6 +735,7 @@ export class GitState {
 
         switch (fileOperation.type) {
           case "write": {
+            await ensureDirectoryExists(filePath);
             await vscode.workspace.fs.writeFile(
               filePath,
               Buffer.from(fileOperation.content)
@@ -776,7 +765,5 @@ export class GitState {
         `commit -m "${commitOperation.message}"`
       );
     }
-
-    this.setRebaseMode("READY_TO_PUSH");
   }
 }

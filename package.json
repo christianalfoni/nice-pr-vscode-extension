@@ -76,6 +76,16 @@
       {
         "command": "nicePr.showFileDiff",
         "title": "Show File Changes"
+      },
+      {
+        "command": "nicePr.editRebase",
+        "title": "Edit rebase",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "nicePr.rebase",
+        "title": "Rebase and push",
+        "icon": "$(repo-force-push)"
       }
     ],
     "menus": {
@@ -98,6 +108,16 @@
         {
           "command": "nicePr.addCommit",
           "when": "view == nicePrRebaseView && nicePr.mode == 'REBASING'",
+          "group": "navigation"
+        },
+        {
+          "command": "nicePr.editRebase",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'READY_TO_PUSH'",
+          "group": "navigation"
+        },
+        {
+          "command": "nicePr.rebase",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'READY_TO_PUSH'",
           "group": "navigation"
         }
       ],

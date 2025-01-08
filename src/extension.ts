@@ -1,14 +1,10 @@
 import * as vscode from "vscode";
 
 /*
-  - After approved rebase show rebased commits in the tree view, but only the commits
-  - Show command for dropping the rebase (checkeout to remote)
-  - Show command for force pushing the rebase to remote with lease
-  - Show command for keep editing the rebase
-  - Write tests using diff strings
+  - Write final file operations snapshot tests from diffs and making changes, remember to write for trash as well
   - Create backup branch with a known prefix to identify if a backup is available. Run the backup as part
   of the rebase + push process. Make sure the back is kept up to date if already exists
-  - Remember the trash! Test everything related to trash
+  
 */
 
 import {
@@ -374,7 +370,7 @@ class RebaseTreeDataProvider
   async getChildren(element?: RebaseTreeItem): Promise<RebaseTreeItem[]> {
     const mode = this.gitState.mode;
 
-    if (mode.mode === "IDLE") {
+    if (mode.mode === "IDLE" || mode.mode === "PUSHING") {
       return [];
     }
 
@@ -471,6 +467,12 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("nicePr.approveRebase", () => {
       gitState.setRebaseMode("READY_TO_PUSH");
+    }),
+    vscode.commands.registerCommand("nicePr.editRebase", () => {
+      gitState.setRebaseMode("REBASING");
+    }),
+    vscode.commands.registerCommand("nicePr.rebase", () => {
+      gitState.setRebaseMode("PUSHING");
     }),
     vscode.commands.registerCommand(
       "nicePr.editCommitMessage",

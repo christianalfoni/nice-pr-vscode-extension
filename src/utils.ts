@@ -1,6 +1,5 @@
 import { promisify } from "util";
 import * as cp from "child_process";
-import * as vscode from "vscode";
 import { Change, Commit, Repository, Status } from "./git";
 import { ParsedDiff } from "diff";
 import {
@@ -8,7 +7,6 @@ import {
   ModifyTextFileChange,
   RebaseCommitFileChange,
 } from "./Rebaser";
-import { Chunk } from "parse-git-diff";
 import { AnyChunk } from "parse-git-diff";
 
 const execAsync = promisify(cp.exec);
@@ -162,64 +160,6 @@ export function isTextFileChange(
   change: FileChange
 ): change is ModifyTextFileChange {
   return change.type === FileChangeType.MODIFY && change.fileType === "text";
-}
-
-interface GitUriParams {
-  path: string;
-  ref: string;
-}
-
-interface GitUriOptions {
-  scheme?: string;
-}
-
-export function toGitUri(
-  uri: vscode.Uri,
-  ref: string,
-  options: GitUriOptions = {}
-): vscode.Uri {
-  const params: GitUriParams = {
-    path: uri.fsPath,
-    ref,
-  };
-
-  return uri.with({
-    scheme: options.scheme ?? "git",
-    path: uri.path,
-    query: JSON.stringify(params),
-  });
-}
-
-export function toMultiFileDiffEditorUris(
-  change: Change,
-  originalRef: string,
-  modifiedRef: string
-): {
-  originalUri: vscode.Uri | undefined;
-  modifiedUri: vscode.Uri | undefined;
-} {
-  switch (change.status) {
-    case Status.INDEX_ADDED:
-      return {
-        originalUri: undefined,
-        modifiedUri: toGitUri(change.uri, modifiedRef),
-      };
-    case Status.DELETED:
-      return {
-        originalUri: toGitUri(change.uri, originalRef),
-        modifiedUri: undefined,
-      };
-    case Status.INDEX_RENAMED:
-      return {
-        originalUri: toGitUri(change.originalUri, originalRef),
-        modifiedUri: toGitUri(change.uri, modifiedRef),
-      };
-    default:
-      return {
-        originalUri: toGitUri(change.uri, originalRef),
-        modifiedUri: toGitUri(change.uri, modifiedRef),
-      };
-  }
 }
 
 export function isLineOverlappingWithChange(

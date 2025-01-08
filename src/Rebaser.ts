@@ -1,6 +1,13 @@
 import { applyPatch, Hunk } from "diff";
 
-import { FileChangeType as ChangeType, isTextFileChange } from "./utils";
+import {
+  FileChangeType as ChangeType,
+  FileChangeType,
+  isLineOverlappingWithChange,
+  isTextFileChange,
+  mapChunkToFileChange,
+} from "./utils";
+import parseGitDiff from "parse-git-diff";
 
 export type BaseFileChange = {
   path: string;
@@ -63,30 +70,137 @@ export type RebaseCommitFile = {
 export type RebaseCommitFileChange = FileChange & {
   isSetBeforeDependent: boolean;
 };
-
 export class Rebaser {
   private _isRebasing = false;
   private _trash: FileChange[] = [];
   private _commits: Commit[] = [];
   private _changes: FileChange[];
   constructor(
-    private _branch: string,
     /**
      * Should be commits from newest to oldest
      */
-    _commits: Commit[],
-    /**
-     * Should be changes from oldest to newest
-     */
-    _changes: FileChange[]
+    commits: {
+      commit: Commit;
+      diff: string;
+    }[]
   ) {
-    this._commits = _commits.map((commit) => ({
-      hash: commit.hash,
-      message: commit.message,
+    this._commits = commits.map(({ commit }) => commit);
+    this._changes = this.normalizeChanges(
+      this.getFileChangesOfCommits(commits)
+    );
+  }
+  private getFileChangesOfCommits(
+    commits: {
+      commit: Commit;
+      diff: string;
+    }[]
+  ) {
+    // We grab the changes for each commit, which represents the files affected
+    const diffs = commits.map(({ commit, diff }) => ({
+      commit,
+      diff: parseGitDiff(diff).files,
     }));
 
-    this._changes = this.normalizeChanges(_changes);
+    // Then we group the changes by file. We do not actually care about the type of change,
+    // the hunks themselves represents the actual changes to apply
+    let changeIndex = 0;
+    let fileChanges: FileChange[] = [];
+
+    for (const { diff, commit } of diffs) {
+      for (const diffChange of diff) {
+        switch (diffChange.type) {
+          case "AddedFile": {
+            fileChanges = [
+              ...fileChanges,
+              {
+                type: FileChangeType.ADD,
+                index: changeIndex++,
+                dependencies: [],
+                hash: commit.hash,
+                path: diffChange.path,
+              },
+            ];
+            break;
+          }
+          case "DeletedFile": {
+            fileChanges = [
+              ...fileChanges,
+              {
+                type: FileChangeType.DELETE,
+                index: changeIndex++,
+                // A deletion of a file depends on any changes made before the deletion
+                dependencies: fileChanges
+                  .filter((prevChange) => prevChange.path === diffChange.path)
+                  .map((prevChange) => prevChange.index),
+                hash: commit.hash,
+                path: diffChange.path,
+              },
+            ];
+            break;
+          }
+          case "RenamedFile": {
+            fileChanges = [
+              ...fileChanges,
+              {
+                type: FileChangeType.RENAME,
+                index: changeIndex++,
+                // Renames depend on the previous file path changes
+                dependencies: fileChanges
+                  .filter(
+                    (prevChange) => prevChange.path === diffChange.pathBefore
+                  )
+                  .map((prevChange) => prevChange.index),
+                hash: commit.hash,
+                oldFileName: diffChange.pathBefore,
+                path: diffChange.pathAfter,
+              },
+            ];
+            break;
+          }
+        }
+
+        // We do not care about the actual changes for a deleted file, as
+        // the developer intended to delete the file in whatever state it was
+        if (diffChange.type === "DeletedFile") {
+          break;
+        }
+
+        const path =
+          diffChange.type === "RenamedFile"
+            ? diffChange.pathAfter
+            : diffChange.path;
+
+        fileChanges = [
+          ...fileChanges,
+          ...diffChange.chunks.map((chunk) =>
+            mapChunkToFileChange({
+              chunk,
+              hash: commit.hash,
+              path,
+              index: changeIndex++,
+              dependencies: fileChanges
+                .filter(
+                  (prevChange) =>
+                    (prevChange.path === path &&
+                      // Adding a file, renaming it or having overlapping changes means we depend on the previous change
+                      prevChange.type === FileChangeType.ADD) ||
+                    prevChange.type === FileChangeType.RENAME ||
+                    (chunk.type === "Chunk" &&
+                      isLineOverlappingWithChange(
+                        chunk.fromFileRange.start,
+                        prevChange
+                      ))
+                )
+                .map((prevChange) => prevChange.index),
+            })
+          ),
+        ];
+      }
+    }
+
+    return fileChanges;
   }
+
   // This will effectively remove the line additions from previous changes of each change.
   // We will also track dependents of each change, so that we can show a warning if a change
   // depending on another change is moved before it. The dependents does not affect
@@ -339,7 +453,6 @@ export class Rebaser {
           const changeIndex = changesCopy.indexOf(change);
           const isInTrash = dependentIndex === -1;
 
-          console.log("WTF", change, changeIndex, isInTrash);
           if (dependentIndex > changeIndex || isInTrash) {
             isSetBeforeDependent = true;
             break;
