@@ -370,7 +370,11 @@ class RebaseTreeDataProvider
   async getChildren(element?: RebaseTreeItem): Promise<RebaseTreeItem[]> {
     const mode = this.gitState.mode;
 
-    if (mode.mode === "IDLE" || mode.mode === "PUSHING") {
+    if (
+      mode.mode === "IDLE" ||
+      mode.mode === "PUSHING" ||
+      mode.mode === "SUGGESTING"
+    ) {
       return [];
     }
 
@@ -461,6 +465,9 @@ export async function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand("nicePr.startRebase", () => {
       gitState.setRebaseMode("REBASING");
+    }),
+    vscode.commands.registerCommand("nicePr.suggest", () => {
+      gitState.setRebaseMode("SUGGESTING");
     }),
     vscode.commands.registerCommand("nicePr.cancelRebase", () => {
       gitState.setRebaseMode("IDLE");

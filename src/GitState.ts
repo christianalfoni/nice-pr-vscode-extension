@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { API, Change, Commit, Repository, Status } from "./git";
 import * as cp from "child_process";
-import { Rebaser } from "./Rebaser";
+import { Rebaser, ResponseSchema } from "./Rebaser";
 import { promisify } from "util";
 import {
   FileChangeType,
@@ -9,6 +9,13 @@ import {
   getParentCommitHash,
 } from "./utils";
 import { join } from "path";
+import { z } from "zod";
+import OpenaI from "openai";
+import { zodResponseFormat } from "openai/helpers/zod";
+
+const openai = new OpenaI({
+  apiKey: vscode.workspace.getConfiguration("nicePr").get("openAiApiKey"),
+});
 
 const execAsync = promisify(cp.exec);
 
@@ -135,6 +142,9 @@ type RebaseMode =
     }
   | {
       mode: "PUSHING";
+    }
+  | {
+      mode: "SUGGESTING";
     };
 
 type RebaseFileOperation =
@@ -315,7 +325,11 @@ export class GitState {
   }
 
   getRebaser() {
-    if (this.mode.mode === "IDLE" || this.mode.mode === "PUSHING") {
+    if (
+      this.mode.mode === "IDLE" ||
+      this.mode.mode === "PUSHING" ||
+      this.mode.mode === "SUGGESTING"
+    ) {
       throw new Error("No rebaser available");
     }
 
@@ -328,6 +342,66 @@ export class GitState {
         this.mode = {
           mode: "IDLE",
         };
+        return;
+      }
+      case "SUGGESTING": {
+        const repo = this.getRepo();
+
+        const diffs = await Promise.all(
+          this._commits
+            .slice()
+            .reverse()
+            .map((commit) =>
+              executeGitCommand(
+                repo,
+                `diff --unified=0 ${getParentCommitHash(commit)} ${commit.hash}`
+              ).then((diff) => ({ commit, diff }))
+            )
+        );
+
+        const rebaser = new Rebaser(diffs);
+        const suggestedCommits = rebaser.getSuggestedRebaseCommits();
+
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [
+            {
+              role: "system",
+              content: `You are an assistant that cleans up git commit history. Please analyze the commits, sorted by newest to oldest, and create a more clear and consistent history. Respond with a JSON object matching the rebase schema.
+
+You are allowed to do the following operations:
+
+- Change the order of commits
+- Change the hash of changes to reference a different commit
+- Change the message of commits
+- Add new commits by creating a random hash for it
+- Remove commits
+- Remove changes
+
+You are not allowed to:
+- Change the hash of commits
+- Change the hash of changes that has dependencies where the hash of those dependencies are news than the change`,
+            },
+            {
+              role: "user",
+              content: JSON.stringify(suggestedCommits),
+            },
+          ],
+          response_format: zodResponseFormat(ResponseSchema, "rebase"),
+          temperature: 0.7,
+        });
+
+        const parsedResponse = ResponseSchema.parse(
+          JSON.parse(response.choices[0].message.content!)
+        );
+
+        rebaser.setSuggestedRebaseCommits(parsedResponse);
+
+        this.mode = {
+          mode: "REBASING",
+          rebaser,
+        };
+
         return;
       }
       case "REBASING": {

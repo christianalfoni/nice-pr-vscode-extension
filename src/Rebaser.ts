@@ -8,6 +8,37 @@ import {
   mapChunkToFileChange,
 } from "./utils";
 import parseGitDiff from "parse-git-diff";
+import { z } from "zod";
+
+export const ResponseSchema = z.object({
+  commits: z.array(
+    z.object({
+      hash: z
+        .string()
+        .describe(
+          "The commit hash, this can just be random strings for new commits"
+        ),
+      message: z.string().describe("The commit message"),
+    })
+  ),
+  changes: z.array(
+    z.object({
+      filePath: z.string().describe("The file path"),
+      index: z.number().describe("The original index of the change"),
+      hash: z.string().describe("A reference to a hash in the commits"),
+      dependencies: z
+        .array(z.number())
+        .describe(
+          "This change can only use a hash that is the same or later than changes referenced in this list"
+        ),
+      type: z.enum(["add", "delete", "modify", "rename"]),
+      lines: z
+        .array(z.string())
+        .optional()
+        .describe("The diff lines of the change, if any"),
+    })
+  ),
+});
 
 export type BaseFileChange = {
   path: string;
@@ -84,7 +115,7 @@ export class Rebaser {
       diff: string;
     }[]
   ) {
-    this._commits = commits.map(({ commit }) => commit);
+    this._commits = commits.map(({ commit }) => commit).reverse();
     this._changes = this.normalizeChanges(
       this.getFileChangesOfCommits(commits)
     );
@@ -664,5 +695,53 @@ export class Rebaser {
         continue;
       }
     }
+  }
+  getSuggestedRebaseCommits(): z.infer<typeof ResponseSchema> {
+    return {
+      commits: this._commits.map((commit) => ({
+        hash: commit.hash,
+        message: commit.message,
+      })),
+      changes: this._changes.map((change) => ({
+        dependencies: change.dependencies,
+        filePath: change.path,
+        hash: change.hash,
+        index: change.index,
+        type:
+          change.type === FileChangeType.ADD
+            ? "add"
+            : change.type === FileChangeType.DELETE
+            ? "delete"
+            : change.type === FileChangeType.MODIFY
+            ? "modify"
+            : "rename",
+        lines:
+          change.type === FileChangeType.MODIFY && change.fileType === "text"
+            ? change.lines
+            : undefined,
+      })),
+    };
+  }
+  setSuggestedRebaseCommits(suggestions: z.infer<typeof ResponseSchema>) {
+    this._commits = suggestions.commits;
+    this._trash = this._changes.filter(
+      (originalChange) =>
+        !suggestions.changes.find(
+          (change) => change.index === originalChange.index
+        )
+    );
+    this._changes = suggestions.changes.map((change) => {
+      const originalChange = this._changes.find(
+        (originalChange) => originalChange.index === change.index
+      );
+
+      if (!originalChange) {
+        throw new Error("Could not find original change");
+      }
+
+      return originalChange;
+    });
+
+    this.sortChanges(this._changes);
   }
 }

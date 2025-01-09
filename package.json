@@ -86,12 +86,22 @@
         "command": "nicePr.rebase",
         "title": "Rebase and push",
         "icon": "$(repo-force-push)"
+      },
+      {
+        "command": "nicePr.suggest",
+        "title": "Suggest rebase",
+        "icon": "$(sparkle)"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "nicePr.startRebase",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'IDLE'",
+          "group": "navigation"
+        },
+        {
+          "command": "nicePr.suggest",
           "when": "view == nicePrRebaseView && nicePr.mode == 'IDLE'",
           "group": "navigation"
         },
@@ -129,6 +139,29 @@
           "title": "Remove Empty Commit"
         }
       ]
+    },
+    "configuration": {
+      "title": "Nice PR",
+      "properties": {
+        "nicePr.openAiEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "The endpoint to use with the OpenAI client",
+          "scope": "application"
+        },
+        "nicePr.openAiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API Key for rebase suggestions",
+          "scope": "application"
+        },
+        "nicePr.suggestionInstructions": {
+          "type": "string",
+          "default": "You are an assistant that cleans up git commit history. Please analyze the commits, sorted by newest to oldest, and create a more clear and consistent history. Respond with a JSON object matching the rebase schema.\n\nYou are allowed to do the following operations:\n\n- Change the order of commits\n- Change the hash of changes to reference a different commit\n- Change the message of commits\n- Add new commits by creating a random hash for it\n- Remove commits\n- Remove changes\n\nYou are not allowed to:\n- Change the hash of commits\n- Change the hash of changes that has dependencies where the hash of those dependencies are news than the change",
+          "description": "The instructions for the LLM to generate rebase suggestions",
+          "scope": "application"
+        }
+      }
     }
   },
   "scripts": {
@@ -164,6 +197,8 @@
   "dependencies": {
     "@types/diff": "^6.0.0",
     "diff": "^7.0.0",
-    "parse-git-diff": "^0.0.17"
+    "openai": "^4.77.4",
+    "parse-git-diff": "^0.0.17",
+    "zod": "^3.24.1"
   }
 }
