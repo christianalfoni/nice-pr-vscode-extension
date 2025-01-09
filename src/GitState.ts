@@ -9,11 +9,11 @@ import {
   getParentCommitHash,
 } from "./utils";
 import { join } from "path";
-import { z } from "zod";
 import OpenaI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 
 const openai = new OpenaI({
+  baseURL: vscode.workspace.getConfiguration("nicePr").get("openAiBaseUrl"),
   apiKey: vscode.workspace.getConfiguration("nicePr").get("openAiApiKey"),
 });
 
@@ -337,72 +337,79 @@ export class GitState {
   }
 
   async setRebaseMode(mode: RebaseMode["mode"]) {
+    if (this.mode.mode === "SUGGESTING") {
+      return;
+    }
+
     switch (mode) {
       case "IDLE": {
         this.mode = {
           mode: "IDLE",
         };
-        return;
+        break;
       }
       case "SUGGESTING": {
         const repo = this.getRepo();
 
-        const diffs = await Promise.all(
-          this._commits
-            .slice()
-            .reverse()
-            .map((commit) =>
-              executeGitCommand(
-                repo,
-                `diff --unified=0 ${getParentCommitHash(commit)} ${commit.hash}`
-              ).then((diff) => ({ commit, diff }))
-            )
+        // Show the progress indicator
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: "Suggesting...",
+            cancellable: false,
+          },
+          async (progress) => {
+            const diffs = await Promise.all(
+              this._commits
+                .slice()
+                .reverse()
+                .map((commit) =>
+                  executeGitCommand(
+                    repo,
+                    `diff --unified=0 ${getParentCommitHash(commit)} ${
+                      commit.hash
+                    }`
+                  ).then((diff) => ({ commit, diff }))
+                )
+            );
+
+            const rebaser = new Rebaser(diffs);
+            const suggestedCommits = rebaser.getSuggestedRebaseCommits();
+
+            console.log(suggestedCommits);
+
+            const response = await openai.chat.completions.create({
+              model: "gpt-4o",
+              messages: [
+                {
+                  role: "system",
+                  content: vscode.workspace
+                    .getConfiguration("nicePr")
+                    .get("suggestionInstructions")!,
+                },
+                {
+                  role: "user",
+                  content: JSON.stringify(suggestedCommits),
+                },
+              ],
+              response_format: zodResponseFormat(ResponseSchema, "rebase"),
+              temperature: 0.2,
+            });
+
+            const parsedResponse = ResponseSchema.parse(
+              JSON.parse(response.choices[0].message.content!)
+            );
+
+            rebaser.setSuggestedRebaseCommits(parsedResponse);
+
+            this.mode = {
+              mode: "REBASING",
+              rebaser,
+            };
+          }
         );
 
-        const rebaser = new Rebaser(diffs);
-        const suggestedCommits = rebaser.getSuggestedRebaseCommits();
-
-        const response = await openai.chat.completions.create({
-          model: "gpt-4o",
-          messages: [
-            {
-              role: "system",
-              content: `You are an assistant that cleans up git commit history. Please analyze the commits, sorted by newest to oldest, and create a more clear and consistent history. Respond with a JSON object matching the rebase schema.
-
-You are allowed to do the following operations:
-
-- Change the order of commits
-- Change the hash of changes to reference a different commit
-- Change the message of commits
-- Add new commits by creating a random hash for it
-- Remove commits
-- Remove changes
-
-You are not allowed to:
-- Change the hash of commits
-- Change the hash of changes that has dependencies where the hash of those dependencies are news than the change`,
-            },
-            {
-              role: "user",
-              content: JSON.stringify(suggestedCommits),
-            },
-          ],
-          response_format: zodResponseFormat(ResponseSchema, "rebase"),
-          temperature: 0.7,
-        });
-
-        const parsedResponse = ResponseSchema.parse(
-          JSON.parse(response.choices[0].message.content!)
-        );
-
-        rebaser.setSuggestedRebaseCommits(parsedResponse);
-
-        this.mode = {
-          mode: "REBASING",
-          rebaser,
-        };
-
-        return;
+        break;
       }
       case "REBASING": {
         if (this.mode.mode === "READY_TO_PUSH") {
@@ -431,7 +438,7 @@ You are not allowed to:
           mode: "REBASING",
           rebaser: new Rebaser(diffs),
         };
-        return;
+        break;
       }
       case "READY_TO_PUSH": {
         if (this.mode.mode !== "REBASING") {
@@ -455,6 +462,7 @@ You are not allowed to:
           mode: "READY_TO_PUSH",
           rebaser: this.mode.rebaser,
         };
+        break;
       }
       case "PUSHING": {
         if (this.mode.mode !== "READY_TO_PUSH") {

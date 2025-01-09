@@ -4,7 +4,6 @@ import * as vscode from "vscode";
   - Write final file operations snapshot tests from diffs and making changes, remember to write for trash as well
   - Create backup branch with a known prefix to identify if a backup is available. Run the backup as part
   of the rebase + push process. Make sure the back is kept up to date if already exists
-  
 */
 
 import {

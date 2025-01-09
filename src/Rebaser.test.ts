@@ -14,7 +14,7 @@ const fixtures = Object.entries<{ default: string }>(
 }, {});
 
 describe("Rebaser", () => {
-  test("Should create rebaser", () => {
+  test("Should create rebase commits", () => {
     const rebaser = new Rebaser([
       {
         commit: {
@@ -25,6 +25,6 @@ describe("Rebaser", () => {
       },
     ]);
 
-    expect(rebaser).toBeTruthy();
+    expect(rebaser.getRebaseCommits()).toMatchSnapshot();
   });
 });

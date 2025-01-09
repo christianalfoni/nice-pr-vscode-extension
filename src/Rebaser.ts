@@ -3,6 +3,7 @@ import { applyPatch, Hunk } from "diff";
 import {
   FileChangeType as ChangeType,
   FileChangeType,
+  getFileOperationChangeFromChanges,
   isLineOverlappingWithChange,
   isTextFileChange,
   mapChunkToFileChange,
@@ -12,14 +13,16 @@ import { z } from "zod";
 
 export const ResponseSchema = z.object({
   commits: z.array(
-    z.object({
-      hash: z
-        .string()
-        .describe(
-          "The commit hash, this can just be random strings for new commits"
-        ),
-      message: z.string().describe("The commit message"),
-    })
+    z
+      .object({
+        hash: z
+          .string()
+          .describe(
+            "The commit hash, this can just be random strings for new commits"
+          ),
+        message: z.string().describe("The commit message"),
+      })
+      .describe("The commits to rebase")
   ),
   changes: z.array(
     z.object({
@@ -640,19 +643,31 @@ export class Rebaser {
       throw new Error("Could not find commit");
     }
 
-    const targetIndex =
-      afterRef === "trash"
-        ? 0
-        : this._commits.findIndex((commit) => commit.hash === afterRef);
+    const currentIndex = this._commits.indexOf(commit);
+
+    this._commits.splice(currentIndex, 1);
+
+    if (afterRef === "trash") {
+      this._trash = this._trash.concat(
+        this._changes.filter((change) => change.hash === hash)
+      );
+      this._changes = this._changes.filter((change) => change.hash !== hash);
+      this.sortChanges(this._changes);
+
+      return;
+    }
+
+    const targetIndex = this._commits.findIndex(
+      (commit) => commit.hash === afterRef
+    );
 
     if (targetIndex === -1) {
       throw new Error("Could not find target");
     }
 
-    const currentIndex = this._commits.indexOf(commit);
-
-    this._commits.splice(currentIndex, 1);
     this._commits.splice(targetIndex, 0, commit);
+
+    this.sortChanges(this._changes);
   }
   moveChangeFromTrash(
     fileName: string,

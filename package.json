@@ -143,7 +143,7 @@
     "configuration": {
       "title": "Nice PR",
       "properties": {
-        "nicePr.openAiEndpoint": {
+        "nicePr.openAiBaseUrl": {
           "type": "string",
           "default": "",
           "description": "The endpoint to use with the OpenAI client",
@@ -157,7 +157,7 @@
         },
         "nicePr.suggestionInstructions": {
           "type": "string",
-          "default": "You are an assistant that cleans up git commit history. Please analyze the commits, sorted by newest to oldest, and create a more clear and consistent history. Respond with a JSON object matching the rebase schema.\n\nYou are allowed to do the following operations:\n\n- Change the order of commits\n- Change the hash of changes to reference a different commit\n- Change the message of commits\n- Add new commits by creating a random hash for it\n- Remove commits\n- Remove changes\n\nYou are not allowed to:\n- Change the hash of commits\n- Change the hash of changes that has dependencies where the hash of those dependencies are news than the change",
+          "default": "You are an assistant that cleans up git commit history. Respond with a JSON object matching the rebase schema.\n\nYou are allowed to do the following operations:\n\n- Change the order of commits\n- Change the hash of changes to reference a different commit\n- Change the message of commits\n- Add new commits by creating a random hash for it\n- Remove commits\n- Remove changes\n\nYou are not allowed to:\n- Change the hash of commits\n- Change the hash of changes that has dependencies where the hash of those dependencies are news than the change\n\nBe diligent about removing unncessary code and keeping things concise and clean.",
           "description": "The instructions for the LLM to generate rebase suggestions",
           "scope": "application"
         }

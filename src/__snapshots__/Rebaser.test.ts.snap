@@ -1,0 +1,71 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Rebaser > Should create rebase commits 1`] = `
+[
+  {
+    "files": [
+      {
+        "changes": [
+          {
+            "dependencies": [],
+            "fileType": "text",
+            "hash": "123",
+            "index": 0,
+            "isSetBeforeDependent": false,
+            "lines": [
+              "-  "private": true,",
+              "+   "private": false,",
+            ],
+            "newLines": 1,
+            "newStart": 3,
+            "oldLines": 1,
+            "oldStart": 3,
+            "path": "package.json",
+            "type": "MODIFY",
+          },
+        ],
+        "fileName": "package.json",
+        "hasChangeSetBeforeDependent": false,
+      },
+    ],
+    "hasChangeSetBeforeDependent": false,
+    "hash": "123",
+    "message": "Whatever",
+  },
+]
+`;
+
+exports[`Rebaser > Should create rebaser 1`] = `
+[
+  {
+    "files": [
+      {
+        "changes": [
+          {
+            "dependencies": [],
+            "fileType": "text",
+            "hash": "123",
+            "index": 0,
+            "isSetBeforeDependent": false,
+            "lines": [
+              "-  "private": true,",
+              "+   "private": false,",
+            ],
+            "newLines": 1,
+            "newStart": 3,
+            "oldLines": 1,
+            "oldStart": 3,
+            "path": "package.json",
+            "type": "MODIFY",
+          },
+        ],
+        "fileName": "package.json",
+        "hasChangeSetBeforeDependent": false,
+      },
+    ],
+    "hasChangeSetBeforeDependent": false,
+    "hash": "123",
+    "message": "Whatever",
+  },
+]
+`;
