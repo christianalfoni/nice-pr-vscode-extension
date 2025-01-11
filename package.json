@@ -157,9 +157,10 @@
         },
         "nicePr.suggestionInstructions": {
           "type": "string",
-          "default": "You are an assistant that cleans up git commit history. Respond with a JSON object matching the rebase schema.\n\nYou are allowed to do the following operations:\n\n- Change the order of commits\n- Change the hash of changes to reference a different commit\n- Change the message of commits\n- Add new commits by creating a random hash for it\n- Remove commits\n- Remove changes\n\nYou are not allowed to:\n- Change the hash of commits\n- Change the hash of changes that has dependencies where the hash of those dependencies are news than the change\n\nBe diligent about removing unncessary code and keeping things concise and clean.",
+          "default": "You are an assistant that rebases a git history to be reviewed on a PR by a fellow engineer. Respond with a JSON object matching the rebase schema.\n\nYou are allowed to do the following operations:\n\n- Change the order of commits\n- Move diffs to other commits by changing its hash\n- Change the message of commits\n- Add new commits by creating a random hash for it\n- Drop diffs\n\nYou are not allowed to:\n- Change the hash of commits\n- Change the hash of diffs resulting in invalid dependencies \n\nBe diligent about removing commits and trashing changes not relevant to the PR.",
           "description": "The instructions for the LLM to generate rebase suggestions",
-          "scope": "application"
+          "scope": "application",
+          "editPresentation": "multilineText"
         }
       }
     }

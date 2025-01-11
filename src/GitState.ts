@@ -359,7 +359,7 @@ export class GitState {
             cancellable: false,
           },
           async (progress) => {
-            const diffs = await Promise.all(
+            const commitsWithDiffs = await Promise.all(
               this._commits
                 .slice()
                 .reverse()
@@ -373,23 +373,43 @@ export class GitState {
                 )
             );
 
-            const rebaser = new Rebaser(diffs);
-            const suggestedCommits = rebaser.getSuggestedRebaseCommits();
+            const rebaser = new Rebaser(commitsWithDiffs);
+            const diffs = rebaser.getSuggestionDiffs();
 
-            console.log(suggestedCommits);
-
+            /**
+             IMPROVEMENTS:
+             - We could get the description of the PR?
+             - Be even more concise about what relevant changes are
+             */
             const response = await openai.chat.completions.create({
               model: "gpt-4o",
               messages: [
                 {
                   role: "system",
+                  /*
                   content: vscode.workspace
                     .getConfiguration("nicePr")
-                    .get("suggestionInstructions")!,
+                    .get("suggestionInstructions")!,*/
+                  content: `You are an assistant that creates a nice PR for an other engineer to review.
+                  
+Please follow these instructions:
+
+- Evaluate what commit messages and diffs are actuall relevant for a PR
+- Create new commit messages that describes the changes in a clear way. Do not create commits for debugging, linting,
+formatting or other non-functional changes
+- Evaluate what diffs are relevant for the PR and assign them to the respective generated commits
+- Diffs that can be safely ignored should be marked as dropped
+`,
                 },
                 {
                   role: "user",
-                  content: JSON.stringify(suggestedCommits),
+                  content: `These are commit message of the original commits:
+                  
+${commitsWithDiffs.map(({ commit }) => "- " + commit.message).join("\n")}
+
+And these are the diffs:
+
+${JSON.stringify(diffs)}`,
                 },
               ],
               response_format: zodResponseFormat(ResponseSchema, "rebase"),
@@ -399,6 +419,8 @@ export class GitState {
             const parsedResponse = ResponseSchema.parse(
               JSON.parse(response.choices[0].message.content!)
             );
+
+            console.log(parsedResponse);
 
             rebaser.setSuggestedRebaseCommits(parsedResponse);
 

@@ -95,12 +95,17 @@ export function getParentCommitHash(commit: Commit) {
   return commit.hash + "^";
 }
 
-export function getLineChanges(change: FileChange) {
-  return change.type === FileChangeType.MODIFY && change.fileType === "text"
-    ? change.lines
-        .filter((line) => line[0] === "+")
-        .map((line) => line.slice(1))
-    : [];
+export function getModificationTypeFromChange(
+  change: ModifyTextFileChange & { fileType: "text" }
+) {
+  if (change.oldLines === 0) {
+    return "ADD";
+  }
+  if (change.newLines === 0) {
+    return "DELETE";
+  }
+
+  return "MODIFY";
 }
 
 export function mapChunkToFileChange({

@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
 
 /*
-  - Write final file operations snapshot tests from diffs and making changes, remember to write for trash as well
   - Create backup branch with a known prefix to identify if a backup is available. Run the backup as part
   of the rebase + push process. Make sure the back is kept up to date if already exists
+  - Create crash report feature
+  - Write final file operations snapshot tests from diffs and making changes, remember to write for trash as well
 */
 
 import {
@@ -13,8 +14,7 @@ import {
 } from "./Rebaser";
 import {
   FileChangeType,
-  getFileOperationChangeFromChanges,
-  getLineChanges,
+  getModificationTypeFromChange,
   isTextFileChange,
 } from "./utils";
 import { GitState } from "./GitState";
@@ -188,7 +188,7 @@ class RebaseTreeDataProvider
 
     changes.forEach((change) => {
       if (target.type === "trash") {
-        rebaser.moveChangeToTrash(source.fileName, change);
+        rebaser.moveChange(source.fileName, change, "trash");
         return;
       }
 
@@ -196,7 +196,7 @@ class RebaseTreeDataProvider
         target.type === "commit" ? target.commit.hash : target.ref;
 
       if (source.ref === "trash") {
-        rebaser.moveChangeFromTrash(source.fileName, change, targetRef);
+        rebaser.moveChange(source.fileName, change, targetRef);
         return;
       }
 
@@ -233,7 +233,12 @@ class RebaseTreeDataProvider
       const change = element.change;
       const item = new vscode.TreeItem("Add file");
       item.iconPath = new vscode.ThemeIcon(
-        change.isSetBeforeDependent ? "warning" : "plus"
+        change.isSetBeforeDependent ? "warning" : "plus",
+        new vscode.ThemeColor(
+          change.isSetBeforeDependent
+            ? "debugTokenExpression.error"
+            : "gitDecoration.addedResourceForeground"
+        )
       );
       item.contextValue = "droppableHunk";
 
@@ -247,7 +252,12 @@ class RebaseTreeDataProvider
       const change = element.change;
       const item = new vscode.TreeItem("Rename from " + change.oldFileName);
       item.iconPath = new vscode.ThemeIcon(
-        change.isSetBeforeDependent ? "warning" : "arrow-right"
+        change.isSetBeforeDependent ? "warning" : "arrow-right",
+        new vscode.ThemeColor(
+          change.isSetBeforeDependent
+            ? "debugTokenExpression.error"
+            : "gitDecoration.renamedResourceForeground"
+        )
       );
       item.contextValue = "droppableHunk";
 
@@ -261,7 +271,12 @@ class RebaseTreeDataProvider
       const change = element.change;
       const item = new vscode.TreeItem("Delete");
       item.iconPath = new vscode.ThemeIcon(
-        change.isSetBeforeDependent ? "warning" : "x"
+        change.isSetBeforeDependent ? "warning" : "x",
+        new vscode.ThemeColor(
+          change.isSetBeforeDependent
+            ? "debugTokenExpression.error"
+            : "gitDecoration.deletedResourceForeground"
+        )
       );
       item.contextValue = "droppableHunk";
 
@@ -270,9 +285,20 @@ class RebaseTreeDataProvider
 
     if (element.type === "change" && isTextFileChange(element.change)) {
       const change = element.change;
-      const item = new vscode.TreeItem(getLineChanges(change).join("\n"));
+      const modificationType = getModificationTypeFromChange(change);
+      const item = new vscode.TreeItem(change.lines.join("\n"));
+      const hasWarning = change.isSetBeforeDependent;
       item.iconPath = new vscode.ThemeIcon(
-        change.isSetBeforeDependent ? "warning" : "code"
+        hasWarning ? "warning" : "code",
+        new vscode.ThemeColor(
+          hasWarning
+            ? "debugTokenExpression.error"
+            : modificationType === "ADD"
+            ? "gitDecoration.addedResourceForeground"
+            : modificationType === "DELETE"
+            ? "gitDecoration.deletedResourceForeground"
+            : "gitDecoration.modifiedResourceForeground"
+        )
       );
       item.contextValue = "droppableHunk";
       // Add command to show diff when clicking the file
@@ -295,12 +321,24 @@ class RebaseTreeDataProvider
 
       item.description = vscode.workspace.asRelativePath(parts.join("/"));
 
-      const fileOperationChange = getFileOperationChangeFromChanges(
-        element.file.changes
-      );
+      const fileChangeType = this.gitState
+        .getRebaser()
+        .getFileChangeType(element.fileName);
+      const hasWarning = element.file.hasChangeSetBeforeDependent;
 
       item.iconPath = new vscode.ThemeIcon(
-        element.file.hasChangeSetBeforeDependent ? "warning" : "file"
+        hasWarning ? "warning" : "file",
+        new vscode.ThemeColor(
+          hasWarning
+            ? "debugTokenExpression.error"
+            : fileChangeType === FileChangeType.MODIFY
+            ? "gitDecoration.modifiedResourceForeground"
+            : fileChangeType === FileChangeType.ADD
+            ? "gitDecoration.addedResourceForeground"
+            : fileChangeType === FileChangeType.DELETE
+            ? "gitDecoration.deletedResourceForeground"
+            : "gitDecoration.renamedResourceForeground"
+        )
       );
       item.tooltip = element.fileName;
       item.contextValue = "droppableFile"; // Change to droppable
@@ -318,7 +356,10 @@ class RebaseTreeDataProvider
         "Trash",
         vscode.TreeItemCollapsibleState.Expanded
       );
-      item.iconPath = new vscode.ThemeIcon("trash");
+      item.iconPath = new vscode.ThemeIcon(
+        "trash",
+        new vscode.ThemeColor("debugTokenExpression.error")
+      );
       item.contextValue = "trash";
       return item;
     }
@@ -328,12 +369,18 @@ class RebaseTreeDataProvider
         element.commit.message,
         vscode.TreeItemCollapsibleState.Expanded
       );
+      const hasWarning = element.commit.hasChangeSetBeforeDependent;
       item.iconPath = new vscode.ThemeIcon(
         element.commit.files.length === 0
           ? "kebab-vertical"
-          : element.commit.hasChangeSetBeforeDependent
+          : hasWarning
           ? "warning"
-          : "git-commit"
+          : "git-commit",
+        new vscode.ThemeColor(
+          hasWarning
+            ? "debugTokenExpression.error"
+            : "scmGraph.historyItemRefColor"
+        )
       );
       // Set contextValue based on whether commit has changes
       item.contextValue =
@@ -517,7 +564,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(
       "nicePr.showFileDiff",
       (item: RebaseFileItem | RebaseChangeItem) => {
-        if (item.type === "file" && item.file.changes.length === 0) {
+        if (
+          (item.type === "file" && item.file.changes.length === 0) ||
+          item.ref === "trash"
+        ) {
           return;
         }
 

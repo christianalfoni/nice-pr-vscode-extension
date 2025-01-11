@@ -12,29 +12,19 @@ import parseGitDiff from "parse-git-diff";
 import { z } from "zod";
 
 export const ResponseSchema = z.object({
-  commits: z.array(
-    z
-      .object({
-        hash: z
-          .string()
-          .describe(
-            "The commit hash, this can just be random strings for new commits"
-          ),
-        message: z.string().describe("The commit message"),
-      })
-      .describe("The commits to rebase")
-  ),
-  changes: z.array(
+  commits: z.array(z.string().describe("The commit message")),
+  diffs: z.array(
     z.object({
       filePath: z.string().describe("The file path"),
       index: z.number().describe("The original index of the change"),
-      hash: z.string().describe("A reference to a hash in the commits"),
+      commitIndex: z.number().describe("A reference to the commit index"),
       dependencies: z
         .array(z.number())
         .describe(
           "This change can only use a hash that is the same or later than changes referenced in this list"
         ),
       type: z.enum(["add", "delete", "modify", "rename"]),
+      isDropped: z.boolean().describe("If the change is dropped"),
       lines: z
         .array(z.string())
         .optional()
@@ -46,7 +36,7 @@ export const ResponseSchema = z.object({
 export type BaseFileChange = {
   path: string;
   index: number;
-  hash: string;
+  hash: string | "trash";
   dependencies: number[];
 };
 
@@ -106,7 +96,6 @@ export type RebaseCommitFileChange = FileChange & {
 };
 export class Rebaser {
   private _isRebasing = false;
-  private _trash: FileChange[] = [];
   private _commits: Commit[] = [];
   private _changes: FileChange[];
   constructor(
@@ -355,9 +344,7 @@ export class Rebaser {
     });
   }
   private getChangeFromRef(fileName: string, changeRef: FileChange) {
-    const changes = this._changes
-      .concat(this._trash)
-      .filter((change) => change.path === fileName);
+    const changes = this._changes.filter((change) => change.path === fileName);
 
     const change = changes.find((change) => change.index === changeRef.index);
 
@@ -368,9 +355,12 @@ export class Rebaser {
     return change;
   }
   getTrash() {
+    const trashChanges = this._changes.filter(
+      (change) => change.hash === "trash"
+    );
     const trash: RebaseCommitFile[] = [];
 
-    for (const change of this._trash) {
+    for (const change of trashChanges) {
       let commitFile = trash.find((item) => item.fileName === change.path);
 
       if (!commitFile) {
@@ -472,6 +462,10 @@ export class Rebaser {
     const changesCopy = this.createFileChanges(this._changes);
 
     for (const change of changesCopy) {
+      if (change.hash === "trash") {
+        continue;
+      }
+
       const rebaseCommit = rebaseCommitsByHash[change.hash];
       const file = rebaseCommit.files.find(
         (file) => file.fileName === change.path
@@ -523,8 +517,11 @@ export class Rebaser {
 
     return this._commits.map((commit) => rebaseCommitsByHash[commit.hash]);
   }
+  private generateHash() {
+    return Math.random().toString(36).substring(2, 15);
+  }
   addCommit(message: string) {
-    const hash = String(Date.now());
+    const hash = this.generateHash();
 
     this._commits.unshift({
       hash,
@@ -625,15 +622,6 @@ export class Rebaser {
 
     return result;
   }
-  moveChangeToTrash(fileName: string, changeRef: FileChange) {
-    const change = this.getChangeFromRef(fileName, changeRef);
-
-    this._changes = this._changes.filter(
-      (currentChange) => currentChange !== change
-    );
-    this._trash = this._trash.concat(change);
-    this.sortChanges(this._trash);
-  }
   // Moves a commit in the array after a target hash. If after trash, it is put
   // on the first index
   moveCommit(hash: string, afterRef?: string | "trash") {
@@ -648,10 +636,11 @@ export class Rebaser {
     this._commits.splice(currentIndex, 1);
 
     if (afterRef === "trash") {
-      this._trash = this._trash.concat(
-        this._changes.filter((change) => change.hash === hash)
-      );
-      this._changes = this._changes.filter((change) => change.hash !== hash);
+      this._changes.forEach((change) => {
+        if (change.hash === hash) {
+          change.hash = "trash";
+        }
+      });
       this.sortChanges(this._changes);
 
       return;
@@ -669,21 +658,6 @@ export class Rebaser {
 
     this.sortChanges(this._changes);
   }
-  moveChangeFromTrash(
-    fileName: string,
-    changeRef: FileChange,
-    targetHash: string
-  ) {
-    const change = this.getChangeFromRef(fileName, changeRef);
-
-    this._trash = this._trash.filter(
-      (currentChange) => currentChange !== change
-    );
-
-    change.hash = targetHash;
-    this._changes = this._changes.concat(change);
-    this.sortChanges(this._changes);
-  }
   // Change to using the index, which should be called changeIndex
   moveChange(fileName: string, changeRef: FileChange, targetHash: string) {
     const change = this.getChangeFromRef(fileName, changeRef);
@@ -692,7 +666,7 @@ export class Rebaser {
   }
   showFileDiff() {}
   push() {}
-  getFileOperationFromChanges(fileName: string) {
+  getFileChangeType(fileName: string) {
     const changes = this._changes.filter((change) => change.path === fileName);
 
     if (changes.length === 0) {
@@ -710,52 +684,51 @@ export class Rebaser {
         continue;
       }
     }
+
+    return fileOperation;
   }
-  getSuggestedRebaseCommits(): z.infer<typeof ResponseSchema> {
-    return {
-      commits: this._commits.map((commit) => ({
-        hash: commit.hash,
-        message: commit.message,
-      })),
-      changes: this._changes.map((change) => ({
-        dependencies: change.dependencies,
-        filePath: change.path,
-        hash: change.hash,
-        index: change.index,
-        type:
-          change.type === FileChangeType.ADD
-            ? "add"
-            : change.type === FileChangeType.DELETE
-            ? "delete"
-            : change.type === FileChangeType.MODIFY
-            ? "modify"
-            : "rename",
-        lines:
-          change.type === FileChangeType.MODIFY && change.fileType === "text"
-            ? change.lines
-            : undefined,
-      })),
-    };
+  getSuggestionDiffs(): Omit<
+    z.infer<typeof ResponseSchema>["diffs"][number],
+    "commitIndex"
+  >[] {
+    return this._changes.map((change) => ({
+      dependencies: change.dependencies,
+      filePath: change.path,
+      isDropped: false,
+      index: change.index,
+      type:
+        change.type === FileChangeType.ADD
+          ? "add"
+          : change.type === FileChangeType.DELETE
+          ? "delete"
+          : change.type === FileChangeType.MODIFY
+          ? "modify"
+          : "rename",
+      lines:
+        change.type === FileChangeType.MODIFY && change.fileType === "text"
+          ? change.lines
+          : undefined,
+    }));
   }
   setSuggestedRebaseCommits(suggestions: z.infer<typeof ResponseSchema>) {
-    this._commits = suggestions.commits;
-    this._trash = this._changes.filter(
-      (originalChange) =>
-        !suggestions.changes.find(
-          (change) => change.index === originalChange.index
-        )
-    );
-    this._changes = suggestions.changes.map((change) => {
-      const originalChange = this._changes.find(
-        (originalChange) => originalChange.index === change.index
+    this._commits = suggestions.commits.map((message) => ({
+      hash: this.generateHash(),
+      message,
+    }));
+
+    for (const diff of suggestions.diffs) {
+      const change = this._changes.find(
+        (change) => change.index === diff.index
       );
 
-      if (!originalChange) {
-        throw new Error("Could not find original change");
+      if (!change) {
+        throw new Error("Could not find change");
       }
 
-      return originalChange;
-    });
+      change.hash = diff.isDropped
+        ? "trash"
+        : this._commits[diff.commitIndex].hash;
+    }
 
     this.sortChanges(this._changes);
   }
