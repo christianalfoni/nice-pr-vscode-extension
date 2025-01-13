@@ -185,3 +185,16 @@ export function isLineOverlappingWithChange(
     return true;
   }
 }
+
+export async function getBranchCommits(
+  repo: Repository,
+  branch: string
+): Promise<Commit[]> {
+  if (branch === "main" || branch === "master") {
+    return [];
+  }
+
+  return repo.log({
+    range: `origin/main..${branch}`,
+  });
+}

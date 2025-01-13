@@ -7,6 +7,7 @@ import {
   FileChangeType,
   getFileOperationChangeFromChanges as getFileOperationChangeFromChanges,
   getParentCommitHash,
+  getBranchCommits,
 } from "./utils";
 import { join } from "path";
 import OpenaI from "openai";
@@ -82,34 +83,16 @@ async function executeGitCommand(
   repo: Repository,
   command: string
 ): Promise<string> {
-  try {
-    const { stdout } = await execAsync(`git ${command}`, {
-      cwd: repo.rootUri.fsPath,
-    });
-    return stdout;
-  } catch (error) {
-    console.error("Git command failed:", error);
-    return "";
-  }
+  const { stdout } = await execAsync(`git ${command}`, {
+    cwd: repo.rootUri.fsPath,
+  });
+
+  return stdout;
 }
 
-async function getGitExtension() {
-  try {
-    const extension = vscode.extensions.getExtension("vscode.git");
-    if (!extension) {
-      return undefined;
-    }
-    const gitExtension = extension.isActive
-      ? extension.exports
-      : await extension.activate();
-    return gitExtension;
-  } catch (err) {
-    console.error("Failed to activate git extension", err);
-    return undefined;
-  }
-}
-
-class InMemoryContentProvider implements vscode.TextDocumentContentProvider {
+export class InMemoryContentProvider
+  implements vscode.TextDocumentContentProvider
+{
   private _onDidChange = new vscode.EventEmitter<vscode.Uri>();
   readonly onDidChange = this._onDidChange.event;
   private contents = new Map<string, string>();
@@ -123,14 +106,21 @@ class InMemoryContentProvider implements vscode.TextDocumentContentProvider {
     this.contents.delete(uri.toString());
   }
 
+  public clearAll() {
+    this.contents.clear();
+  }
+
   provideTextDocumentContent(uri: vscode.Uri): string {
     return this.contents.get(uri.toString()) || "";
   }
 }
 
+const BACKUP_BRANCH_PREFIX = "nice-pr-backup";
+
 type RebaseMode =
   | {
       mode: "IDLE";
+      hasBackupBranch: boolean;
     }
   | {
       mode: "REBASING";
@@ -175,17 +165,19 @@ type ShowFileDiffOptions = {
   selection?: { from: number; to: number };
 };
 
-export class GitState {
+export class NicePR {
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
-  private _commits: Commit[] = [];
-  private _branch: string | undefined;
-  private _api: API | undefined;
   private _mode: RebaseMode = {
     mode: "IDLE",
+    hasBackupBranch: false,
   };
   private _contentProvider: InMemoryContentProvider;
   private _activeDiffs = new Map<string, Set<string>>();
+  private _api: API;
+  private _repo: Repository;
+  private _commits: Commit[];
+  private _branch: string;
 
   private set mode(value: RebaseMode) {
     this._mode = value;
@@ -201,115 +193,36 @@ export class GitState {
     return this._mode;
   }
 
-  constructor(private context: vscode.ExtensionContext) {
-    this._contentProvider = new InMemoryContentProvider();
-    context.subscriptions.push(
-      vscode.workspace.registerTextDocumentContentProvider(
-        "nice-pr-diff",
-        this._contentProvider
-      )
-    );
+  constructor(options: {
+    contentProvider: InMemoryContentProvider;
+    api: API;
+    repo: Repository;
+    branch: string;
+    commits: Commit[];
+  }) {
+    this._api = options.api;
+    this._repo = options.repo;
+    this._branch = options.branch;
+    this._commits = options.commits;
+    this._contentProvider = options.contentProvider;
+
     // Set initial rebase state context
     vscode.commands.executeCommand("setContext", "nicePr.isRebasing", false);
-    this.initialize().catch((err) => {
-      console.error("Failed to initialize GitState:", err);
-    });
 
-    context.subscriptions.push(
-      vscode.workspace.onDidChangeWorkspaceFolders(() => this.setState())
-    );
-
-    this.mode = {
-      mode: "IDLE",
-    };
+    // We set it again as checking backup branch is async
+    this.setRebaseMode("IDLE");
   }
 
-  private async initialize() {
-    const gitExtension = await getGitExtension();
-    if (!gitExtension) {
-      console.error("Git extension not found");
-      return;
+  private checkBackupBranch() {
+    if (!this._branch) {
+      throw new Error("No branch available");
     }
 
-    this._api = gitExtension.getAPI(1);
+    const backupBranch = `${BACKUP_BRANCH_PREFIX}-${this._branch}`;
 
-    // Subscribe to git repository changes
-    this.context.subscriptions.push(
-      // @ts-ignore
-      this._api.onDidOpenRepository(async (repo) => {
-        this.context.subscriptions.push(
-          repo.state.onDidChange(() => this.setState())
-        );
-        await this.setState();
-      }),
-      // @ts-ignore
-      this._api.onDidCloseRepository(() => this.setState())
-    );
-
-    // Subscribe to existing repositories
-    // @ts-ignore
-    this._api.repositories.forEach((repo) => {
-      this.context.subscriptions.push(
-        repo.state.onDidChange(() => this.setState())
-      );
-    });
-
-    console.log("GitState initialized, updating state...");
-    await this.setState();
-  }
-
-  private getRepo() {
-    if (!this._api) {
-      throw new Error("No API available");
-    }
-
-    const repo = this._api.repositories[0];
-
-    if (!repo) {
-      throw new Error("No REPO available");
-    }
-
-    return repo;
-  }
-
-  private getBranch() {
-    const branch = this.getRepo().state.HEAD?.name;
-
-    if (!branch) {
-      throw new Error("No BRANCH available");
-    }
-
-    return branch;
-  }
-
-  private async setState() {
-    const repo = this.getRepo();
-    const branch = this.getBranch();
-
-    // TODO: Show a warning if we are rebasing and the branch changes
-
-    if (branch === "main" || branch === "master") {
-      this._branch = undefined;
-      this._commits = [];
-      this.mode = {
-        mode: "IDLE",
-      };
-      this._onDidChange.fire();
-      return;
-    }
-
-    this._branch = branch;
-
-    try {
-      this._commits = await repo.log({
-        range: `origin/main..${branch}`,
-      });
-
-      console.log("Processed commits:", this._commits.length);
-      this._onDidChange.fire();
-    } catch (e) {
-      console.error("Failed to get commits:", e);
-    }
+    return executeGitCommand(this._repo, `rev-parse --verify ${backupBranch}`)
+      .then(() => true)
+      .catch(() => false);
   }
 
   get commits(): Commit[] {
@@ -345,12 +258,11 @@ export class GitState {
       case "IDLE": {
         this.mode = {
           mode: "IDLE",
+          hasBackupBranch: await this.checkBackupBranch(),
         };
         break;
       }
       case "SUGGESTING": {
-        const repo = this.getRepo();
-
         // Show the progress indicator
         await vscode.window.withProgress(
           {
@@ -365,7 +277,7 @@ export class GitState {
                 .reverse()
                 .map((commit) =>
                   executeGitCommand(
-                    repo,
+                    this._repo,
                     `diff --unified=0 ${getParentCommitHash(commit)} ${
                       commit.hash
                     }`
@@ -442,15 +354,13 @@ ${JSON.stringify(diffs)}`,
           return;
         }
 
-        const repo = this.getRepo();
-
         const diffs = await Promise.all(
           this._commits
             .slice()
             .reverse()
             .map((commit) =>
               executeGitCommand(
-                repo,
+                this._repo,
                 `diff --unified=0 ${getParentCommitHash(commit)} ${commit.hash}`
               ).then((diff) => ({ commit, diff }))
             )
@@ -479,7 +389,6 @@ ${JSON.stringify(diffs)}`,
           return;
         }
 
-        // TODO: Verify here that we do not have any wrong overlapping changes
         this.mode = {
           mode: "READY_TO_PUSH",
           rebaser: this.mode.rebaser,
@@ -493,12 +402,11 @@ ${JSON.stringify(diffs)}`,
 
         await this.rebase();
         await executeGitCommand(
-          this.getRepo(),
+          this._repo,
           `push origin ${this._branch} --force-with-lease`
         );
-        this.mode = {
-          mode: "IDLE",
-        };
+        this.setRebaseMode("IDLE");
+        return;
       }
     }
 
@@ -582,12 +490,11 @@ ${JSON.stringify(diffs)}`,
     }
 
     const rebaser = this.getRebaser();
-    const repo = this.getRepo();
     const commitParentId = `${commit.hash}^`;
     const title = `${commit.message} (${commit.hash.substring(0, 7)})`;
     const multiDiffSourceUri = vscode.Uri.from({
       scheme: "scm-history-item",
-      path: `${repo.rootUri.path}/rebased/${commitParentId}..${commit.hash}`,
+      path: `${this._repo.rootUri.path}/rebased/${commitParentId}..${commit.hash}`,
     });
     const rebasedCommit = rebaser
       .getRebaseCommits()
@@ -651,7 +558,6 @@ ${JSON.stringify(diffs)}`,
       return "";
     }
 
-    const repo = this.getRepo();
     const changesForFile = this.getRebaser().getChangesForFileByHash(
       fileName,
       hash
@@ -668,7 +574,7 @@ ${JSON.stringify(diffs)}`,
       const mergeBase = await this.getInitialHash();
       // Use executeGitCommand to get the file content from the merge base
       return await executeGitCommand(
-        repo,
+        this._repo,
         `show ${mergeBase}:${oldFileName || fileName}`
       );
     } catch (error) {
@@ -815,8 +721,15 @@ ${JSON.stringify(diffs)}`,
       })
     );
 
+    // Create backup branch
+    const currentBranch = this._branch;
+    const backupBranch = `${BACKUP_BRANCH_PREFIX}-${currentBranch}`;
+
+    // Create or update backup branch without checking it out
+    await executeGitCommand(this._repo, `branch -f ${backupBranch}`);
+
     await executeGitCommand(
-      this.getRepo(),
+      this._repo,
       `reset --hard ${await this.getInitialHash()}`
     );
 
@@ -832,7 +745,7 @@ ${JSON.stringify(diffs)}`,
 
     for (const commitOperation of commitOperations) {
       for (const fileOperation of commitOperation.fileOperations) {
-        const workspacePath = this.getRepo().rootUri.fsPath;
+        const workspacePath = this._repo.rootUri.fsPath;
         const filePath = vscode.Uri.file(
           join(workspacePath, fileOperation.fileName)
         );
@@ -863,9 +776,9 @@ ${JSON.stringify(diffs)}`,
           }
         }
       }
-      await executeGitCommand(this.getRepo(), `add .`);
+      await executeGitCommand(this._repo, `add .`);
       await executeGitCommand(
-        this.getRepo(),
+        this._repo,
         `commit -m "${commitOperation.message}"`
       );
     }
