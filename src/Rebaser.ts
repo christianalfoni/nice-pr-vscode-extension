@@ -3,11 +3,10 @@ import { applyPatch, Hunk } from "diff";
 import {
   FileChangeType as ChangeType,
   FileChangeType,
-  getFileOperationChangeFromChanges,
   isLineOverlappingWithChange,
   isTextFileChange,
   mapChunkToFileChange,
-} from "./utils";
+} from "./utils.js";
 import parseGitDiff from "parse-git-diff";
 import { z } from "zod";
 

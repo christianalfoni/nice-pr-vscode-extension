@@ -47,7 +47,7 @@
       {
         "command": "nicePr.startRebase",
         "title": "Start Rebase",
-        "icon": "$(debug-start)"
+        "icon": "$(git-pull-request-draft)"
       },
       {
         "command": "nicePr.cancelRebase",
@@ -91,6 +91,11 @@
         "command": "nicePr.suggest",
         "title": "Suggest rebase",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "nicePr.revertBranch",
+        "title": "Revert branch",
+        "icon": "$(discard)"
       }
     ],
     "menus": {
@@ -98,6 +103,11 @@
         {
           "command": "nicePr.startRebase",
           "when": "view == nicePrRebaseView && nicePr.mode == 'IDLE'",
+          "group": "navigation"
+        },
+        {
+          "command": "nicePr.revertBranch",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'IDLE' && nicePr.hasBackupBranch",
           "group": "navigation"
         },
         {
@@ -176,18 +186,14 @@
     "watch-tests": "tsc -p . -w --outDir out",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vitest",
-    "test-old": "vscode-test"
+    "test": "vitest"
   },
   "devDependencies": {
-    "@types/jest": "^29.5.14",
-    "@types/mocha": "^10.0.9",
+    "@types/diff": "^6.0.0",
     "@types/node": "20.x",
     "@types/vscode": "^1.95.0",
     "@typescript-eslint/eslint-plugin": "^8.10.0",
     "@typescript-eslint/parser": "^8.7.0",
-    "@vscode/test-cli": "^0.0.10",
-    "@vscode/test-electron": "^2.4.1",
     "esbuild": "^0.24.0",
     "eslint": "^9.13.0",
     "npm-run-all": "^4.1.5",
@@ -196,7 +202,6 @@
   },
   "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e",
   "dependencies": {
-    "@types/diff": "^6.0.0",
     "diff": "^7.0.0",
     "openai": "^4.77.4",
     "parse-git-diff": "^0.0.17",

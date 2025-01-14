@@ -1,14 +1,14 @@
 import * as vscode from "vscode";
-import { API, Change, Commit, Repository, Status } from "./git";
+import { API, Change, Commit, Repository, Status } from "./git.js";
 import * as cp from "child_process";
-import { Rebaser, ResponseSchema } from "./Rebaser";
+import { Rebaser, ResponseSchema } from "./Rebaser.js";
 import { promisify } from "util";
 import {
   FileChangeType,
+  getBranchCommits,
   getFileOperationChangeFromChanges as getFileOperationChangeFromChanges,
   getParentCommitHash,
-  getBranchCommits,
-} from "./utils";
+} from "./utils.js";
 import { join } from "path";
 import OpenaI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
@@ -178,6 +178,7 @@ export class NicePR {
   private _repo: Repository;
   private _commits: Commit[];
   private _branch: string;
+  private _stateChangeListenerDisposer: vscode.Disposable;
 
   private set mode(value: RebaseMode) {
     this._mode = value;
@@ -185,6 +186,11 @@ export class NicePR {
       "setContext",
       "nicePr.mode",
       this._mode.mode
+    );
+    vscode.commands.executeCommand(
+      "setContext",
+      "nicePr.hasBackupBranch",
+      this._mode.mode === "IDLE" && this._mode.hasBackupBranch
     );
     this._onDidChange.fire();
   }
@@ -208,6 +214,12 @@ export class NicePR {
 
     // Set initial rebase state context
     vscode.commands.executeCommand("setContext", "nicePr.isRebasing", false);
+    this._stateChangeListenerDisposer = this._repo.state.onDidChange(
+      async () => {
+        this._commits = await getBranchCommits(this._repo, this._branch);
+        this._onDidChange.fire();
+      }
+    );
 
     // We set it again as checking backup branch is async
     this.setRebaseMode("IDLE");
@@ -331,8 +343,6 @@ ${JSON.stringify(diffs)}`,
             const parsedResponse = ResponseSchema.parse(
               JSON.parse(response.choices[0].message.content!)
             );
-
-            console.log(parsedResponse);
 
             rebaser.setSuggestedRebaseCommits(parsedResponse);
 
@@ -670,56 +680,71 @@ ${JSON.stringify(diffs)}`,
       .filter((commit) => Boolean(commit.files.length))
       .reverse();
     const fileStates: Record<string, string> = {};
+    const commitOperations: RebaseCommitOperation[] = [];
 
-    const commitOperations: RebaseCommitOperation[] = await Promise.all(
-      commitsToHandle.map(async (commit) => {
-        return {
-          message: commit.message,
-          fileOperations: await Promise.all(
-            commit.files.map((file) =>
-              Promise.resolve(
-                fileStates[file.fileName] ||
-                  this.getInitialFileContents(file.fileName, commit.hash)
-              )
-                // There is no file yet, so we use empty string as initial content
-                .catch(() => "")
-                .then((content): RebaseFileOperation => {
-                  fileStates[file.fileName] = content;
+    for (const commit of commitsToHandle) {
+      const fileOperations: RebaseFileOperation[] = [];
 
-                  const fileOperationChange = getFileOperationChangeFromChanges(
-                    file.changes
-                  );
+      for (const file of commit.files) {
+        const fileOperationChange = getFileOperationChangeFromChanges(
+          file.changes
+        );
+        const updatedContents =
+          fileOperationChange.type === FileChangeType.RENAME
+            ? fileStates[fileOperationChange.oldFileName]
+            : fileStates[file.fileName];
 
-                  switch (fileOperationChange.type) {
-                    case FileChangeType.ADD:
-                    case FileChangeType.MODIFY: {
-                      return {
-                        type: "write",
-                        fileName: file.fileName,
-                        content: rebaser.applyChanges(content, file.changes),
-                      };
-                    }
-                    case FileChangeType.RENAME: {
-                      return {
-                        type: "move",
-                        oldFileName: fileOperationChange.oldFileName,
-                        fileName: file.fileName,
-                        content: rebaser.applyChanges(content, file.changes),
-                      };
-                    }
-                    case FileChangeType.DELETE: {
-                      return {
-                        type: "remove",
-                        fileName: file.fileName,
-                      };
-                    }
-                  }
-                })
-            )
-          ),
-        };
-      })
-    );
+        const content = await Promise.resolve(
+          updatedContents ||
+            this.getInitialFileContents(file.fileName, commit.hash)
+        )
+          // There is no file yet, so we use empty string as initial content
+          .catch(() => "");
+        // We have to await it to ensure order of operations and updates to file states
+
+        switch (fileOperationChange.type) {
+          case FileChangeType.ADD:
+          case FileChangeType.MODIFY: {
+            fileStates[file.fileName] = rebaser.applyChanges(
+              content,
+              file.changes
+            );
+
+            fileOperations.push({
+              type: "write",
+              fileName: file.fileName,
+              content: fileStates[file.fileName],
+            });
+            break;
+          }
+          case FileChangeType.RENAME: {
+            fileStates[file.fileName] = rebaser.applyChanges(
+              content,
+              file.changes
+            );
+            fileOperations.push({
+              type: "move",
+              oldFileName: fileOperationChange.oldFileName,
+              fileName: file.fileName,
+              content: fileStates[file.fileName],
+            });
+            break;
+          }
+          case FileChangeType.DELETE: {
+            fileOperations.push({
+              type: "remove",
+              fileName: file.fileName,
+            });
+            break;
+          }
+        }
+      }
+
+      commitOperations.push({
+        message: commit.message,
+        fileOperations,
+      });
+    }
 
     // Create backup branch
     const currentBranch = this._branch;
@@ -761,8 +786,8 @@ ${JSON.stringify(diffs)}`,
           }
           case "move": {
             await vscode.workspace.fs.rename(
-              filePath,
-              vscode.Uri.file(join(workspacePath, fileOperation.oldFileName))
+              vscode.Uri.file(join(workspacePath, fileOperation.oldFileName)),
+              filePath
             );
             await vscode.workspace.fs.writeFile(
               filePath,
@@ -776,11 +801,29 @@ ${JSON.stringify(diffs)}`,
           }
         }
       }
+
       await executeGitCommand(this._repo, `add .`);
       await executeGitCommand(
         this._repo,
         `commit -m "${commitOperation.message}"`
       );
     }
+  }
+  async revertToBackupBranch() {
+    if (this.mode.mode !== "IDLE") {
+      throw new Error("Can not revert to backup branch while rebasing");
+    }
+
+    if (!this.mode.hasBackupBranch) {
+      throw new Error("No backup branch available");
+    }
+
+    await executeGitCommand(
+      this._repo,
+      `reset --hard ${BACKUP_BRANCH_PREFIX}-${this._branch}`
+    );
+  }
+  dispose() {
+    this._stateChangeListenerDisposer.dispose();
   }
 }

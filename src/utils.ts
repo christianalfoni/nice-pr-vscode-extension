@@ -1,12 +1,12 @@
 import { promisify } from "util";
 import * as cp from "child_process";
-import { Change, Commit, Repository, Status } from "./git";
+import { Commit, Repository } from "./git.js";
 import { ParsedDiff } from "diff";
 import {
   FileChange,
   ModifyTextFileChange,
   RebaseCommitFileChange,
-} from "./Rebaser";
+} from "./Rebaser.js";
 import { AnyChunk } from "parse-git-diff";
 
 const execAsync = promisify(cp.exec);

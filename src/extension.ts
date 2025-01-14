@@ -11,15 +11,15 @@ import {
   RebaseCommit,
   RebaseCommitFile,
   RebaseCommitFileChange,
-} from "./Rebaser";
+} from "./Rebaser.js";
 import {
   FileChangeType,
   getModificationTypeFromChange,
   isTextFileChange,
   getBranchCommits,
-} from "./utils";
-import { InMemoryContentProvider, NicePR } from "./NicePR";
-import { API, Repository } from "./git";
+} from "./utils.js";
+import { InMemoryContentProvider, NicePR } from "./NicePR.js";
+import { API, Repository } from "./git.js";
 
 type CommitItem = {
   hash: string;
@@ -670,6 +670,7 @@ class Initializer {
             stateChangeDisposer.dispose();
             nicePRChangeDisposer.dispose();
             contentProvider.clearAll();
+            nicePR.dispose();
           },
         };
       }
@@ -717,6 +718,13 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       initializer.state.nicePR.setRebaseMode("REBASING");
+    }),
+    vscode.commands.registerCommand("nicePr.revertBranch", () => {
+      if (initializer.state.state !== "INITIALIZED") {
+        return;
+      }
+
+      initializer.state.nicePR.revertToBackupBranch();
     }),
     vscode.commands.registerCommand("nicePr.suggest", () => {
       if (initializer.state.state !== "INITIALIZED") {

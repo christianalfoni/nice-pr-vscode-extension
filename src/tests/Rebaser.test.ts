@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { Rebaser } from "./Rebaser";
+import { Rebaser } from "../Rebaser";
 
 const fixtures = Object.entries<{ default: string }>(
   // @ts-ignore
