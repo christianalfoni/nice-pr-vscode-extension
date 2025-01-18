@@ -1,8 +1,18 @@
 import * as vscode from "vscode";
 
 /*
-  - Create backup branch with a known prefix to identify if a backup is available. Run the backup as part
-  of the rebase + push process. Make sure the back is kept up to date if already exists
+  - Extend binary type with content and use executeGitCommand to read state of binary at different com
+  - Always show revert, but show message if no backup branch
+  - Option to choose how dependencies should work
+      - Show warning
+      - Block and show message
+      - Move dependencies along
+  - Rename should not be green, should be blue or something
+  - Gray on commit color, could add a flag for new commit… can be green, maybe blue when you change message
+  - Rebase diff does not show as deletion
+  - Show progress when rebase and push
+  - Current commits (origin? remote? local? whatever)
+  
   - Create crash report feature
   - Write final file operations snapshot tests from diffs and making changes, remember to write for trash as well
 */
@@ -69,7 +79,7 @@ class BranchTreeDataProvider
   }
 
   refresh(): void {
-    this.view.title = "Original Commits";
+    this.view.title = "Initial Commits";
     this._onDidChangeTreeData.fire(undefined);
   }
 }
@@ -492,26 +502,6 @@ class RebaseTreeDataProvider
   }
 
   refresh(): void {
-    let title: string;
-
-    if (this.initializer.state.state === "IDLE") {
-      title = "No active repository";
-    } else if (this.initializer.state.state === "INITIALIZING") {
-      title = "Initializing repository";
-    } else if (this.initializer.state.state === "ERROR") {
-      title = this.initializer.state.error;
-    } else {
-      const nicePR = this.initializer.state.nicePR;
-      title = "Ready to rebase";
-
-      if (nicePR.mode.mode === "REBASING") {
-        title = "Rebasing";
-      } else if (nicePR.mode.mode === "READY_TO_PUSH") {
-        title = "Review and Push";
-      }
-    }
-
-    this.view.title = title;
     this._onDidChangeTreeData.fire(undefined);
   }
 }
