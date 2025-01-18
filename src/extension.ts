@@ -502,6 +502,26 @@ class RebaseTreeDataProvider
   }
 
   refresh(): void {
+    let title: string;
+
+    if (this.initializer.state.state === "IDLE") {
+      title = "No active repository";
+    } else if (this.initializer.state.state === "INITIALIZING") {
+      title = "Initializing repository";
+    } else if (this.initializer.state.state === "ERROR") {
+      title = this.initializer.state.error;
+    } else {
+      const nicePR = this.initializer.state.nicePR;
+      title = "Rebased commits:  Ready";
+
+      if (nicePR.mode.mode === "REBASING") {
+        title = "Rebased commits: Rebasing";
+      } else if (nicePR.mode.mode === "READY_TO_PUSH") {
+        title = "Rebased commits: Reviewing";
+      }
+    }
+
+    this.view.title = title;
     this._onDidChangeTreeData.fire(undefined);
   }
 }
