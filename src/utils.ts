@@ -12,22 +12,17 @@ import { AnyChunk } from "parse-git-diff";
 const execAsync = promisify(cp.exec);
 
 // Add these helper functions at the top of the file
-async function executeGitCommand(
+export async function executeGitCommand(
   repo: Repository,
   command: string
 ): Promise<string> {
-  try {
-    const { stdout } = await execAsync(`git ${command}`, {
-      cwd: repo.rootUri.fsPath,
-    });
-    return stdout;
-  } catch (error) {
-    console.error("Git command failed:", error);
-    return "";
-  }
+  const { stdout } = await execAsync(`git ${command}`, {
+    cwd: repo.rootUri.fsPath,
+  });
+  return stdout;
 }
 
-async function executeGitCommandWithBinaryOutput(
+export async function executeGitCommandWithBinaryOutput(
   repo: Repository,
   command: string
 ): Promise<Buffer> {

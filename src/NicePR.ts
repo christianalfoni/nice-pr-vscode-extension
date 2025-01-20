@@ -4,6 +4,8 @@ import * as cp from "child_process";
 import { Rebaser, ResponseSchema } from "./Rebaser.js";
 import { promisify } from "util";
 import {
+  executeGitCommand,
+  executeGitCommandWithBinaryOutput,
   FileChangeType,
   getBranchCommits,
   getFileOperationChangeFromChanges as getFileOperationChangeFromChanges,
@@ -78,18 +80,6 @@ export function toMultiFileDiffEditorUris(
   }
 }
 
-// Add these helper functions at the top of the file
-async function executeGitCommand(
-  repo: Repository,
-  command: string
-): Promise<string> {
-  const { stdout } = await execAsync(`git ${command}`, {
-    cwd: repo.rootUri.fsPath,
-  });
-
-  return stdout;
-}
-
 export class InMemoryContentProvider
   implements vscode.TextDocumentContentProvider
 {
@@ -141,17 +131,16 @@ type RebaseFileOperation =
   | {
       type: "write";
       fileName: string;
-      content: string;
+      content: string | Buffer;
     }
   | {
       type: "remove";
       fileName: string;
     }
   | {
-      type: "move";
+      type: "rename";
       oldFileName: string;
       fileName: string;
-      content: string;
     };
 
 type RebaseCommitOperation = {
@@ -692,6 +681,8 @@ ${JSON.stringify(diffs)}`,
     const fileStates: Record<string, string> = {};
     const commitOperations: RebaseCommitOperation[] = [];
 
+    async function getFileContents(fileName: string, hash: string) {}
+
     for (const commit of commitsToHandle) {
       const fileOperations: RebaseFileOperation[] = [];
 
@@ -701,43 +692,62 @@ ${JSON.stringify(diffs)}`,
         const fileOperationChange = getFileOperationChangeFromChanges(
           file.changes
         );
-        const updatedContents =
-          fileOperationChange.type === FileChangeType.RENAME
-            ? fileStates[fileOperationChange.oldFileName]
-            : fileStates[file.fileName];
+        const lastBinaryChange = file.changes
+          .filter(
+            (change) =>
+              change.type === FileChangeType.MODIFY &&
+              change.fileType === "binary"
+          )
+          .pop();
 
-        const content = await Promise.resolve(
-          updatedContents ||
-            this.getInitialFileContents(file.fileName, commit.hash)
-        )
-          // There is no file yet, so we use empty string as initial content
-          .catch(() => "");
+        let content: string | Buffer;
+
+        // If we a are dealing with a binary change, which would be the last change of the file, we read
+        // the contents of that file using git binary output with the hash it was originally added for
+        if (lastBinaryChange) {
+          content = await executeGitCommandWithBinaryOutput(
+            this._repo,
+            `show ${lastBinaryChange.originalHash}:${file.fileName}`
+          );
+        } else {
+          const updatedContents =
+            fileOperationChange.type === FileChangeType.RENAME
+              ? fileStates[fileOperationChange.oldFileName]
+              : fileStates[file.fileName];
+
+          const currentContent = await Promise.resolve(
+            updatedContents ||
+              this.getInitialFileContents(file.fileName, commit.hash)
+          )
+            // There is no file yet, so we use empty string as initial content
+            .catch(() => "");
+
+          content = fileStates[file.fileName] = rebaser.applyChanges(
+            currentContent,
+            file.changes
+          );
+        }
 
         switch (fileOperationChange.type) {
           case FileChangeType.ADD:
           case FileChangeType.MODIFY: {
-            fileStates[file.fileName] = rebaser.applyChanges(
-              content,
-              file.changes
-            );
-
             fileOperations.push({
               type: "write",
               fileName: file.fileName,
-              content: fileStates[file.fileName],
+              content,
             });
             break;
           }
           case FileChangeType.RENAME: {
-            fileStates[file.fileName] = rebaser.applyChanges(
-              content,
-              file.changes
-            );
             fileOperations.push({
-              type: "move",
+              type: "rename",
               oldFileName: fileOperationChange.oldFileName,
               fileName: file.fileName,
-              content: fileStates[file.fileName],
+            });
+            fileOperations.push({
+              type: "write",
+              fileName: file.fileName,
+              content,
             });
             break;
           }
@@ -795,14 +805,10 @@ ${JSON.stringify(diffs)}`,
             );
             break;
           }
-          case "move": {
+          case "rename": {
             await vscode.workspace.fs.rename(
               vscode.Uri.file(join(workspacePath, fileOperation.oldFileName)),
               filePath
-            );
-            await vscode.workspace.fs.writeFile(
-              filePath,
-              Buffer.from(fileOperation.content)
             );
             break;
           }

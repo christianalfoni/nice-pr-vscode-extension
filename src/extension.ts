@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 
 /*
-  - Extend binary type with content and use executeGitCommand to read state of binary at different com
   - Rebase diff does not show as deletion
   - Option to choose how dependencies should work
       - Show warning
@@ -67,7 +66,7 @@ class RebaseChangeItem extends vscode.TreeItem {
       return change.lines.join("\n");
     }
 
-    return "unknown";
+    return "Binary";
   }
   toJSON() {
     return {
@@ -136,6 +135,8 @@ class RebaseChangeItem extends vscode.TreeItem {
         )
       );
     }
+
+    return new vscode.ThemeIcon("file-binary");
   }
 }
 
