@@ -36,11 +36,10 @@ export type BaseFileChange = {
   path: string;
   index: number;
   hash: string | "trash";
+  originalHash: string;
   dependencies: number[];
 };
 
-// TODO: When building up the file operations for rebase, read the binary files at the initial hash, which
-// is still the current hash
 export type ModifyBinaryFileChange = BaseFileChange & {
   type: ChangeType.MODIFY;
   fileType: "binary";
@@ -88,6 +87,7 @@ export type RebaseCommitFile = {
   fileName: string;
   changes: RebaseCommitFileChange[];
   hasChangeSetBeforeDependent: boolean;
+  hasChanges: boolean;
 };
 
 export type RebaseCommitFileChange = FileChange & {
@@ -97,6 +97,14 @@ export class Rebaser {
   private _isRebasing = false;
   private _commits: Commit[] = [];
   private _changes: FileChange[];
+  private _rebaseCommits: RebaseCommit[] = [];
+  get rebaseCommits() {
+    return this._rebaseCommits;
+  }
+  // This is used to keep track of the original change references, per commit and file.
+  // This way we can easily detect if a commit or file has changes in it
+  private _originalChangeReferences: Record<string, Record<string, number[]>> =
+    {};
   constructor(
     /**
      * Should be commits from newest to oldest
@@ -110,6 +118,25 @@ export class Rebaser {
     this._changes = this.normalizeChanges(
       this.getFileChangesOfCommits(commits)
     );
+    this._originalChangeReferences = this.getOriginalChangeReferences();
+    this._rebaseCommits = this.getRebaseCommits();
+  }
+  private getOriginalChangeReferences() {
+    const changeReferences: Record<string, Record<string, number[]>> = {};
+
+    for (const change of this._changes) {
+      if (!changeReferences[change.hash]) {
+        changeReferences[change.hash] = {};
+      }
+
+      if (!changeReferences[change.hash][change.path]) {
+        changeReferences[change.hash][change.path] = [];
+      }
+
+      changeReferences[change.hash][change.path].push(change.index);
+    }
+
+    return changeReferences;
   }
   private getFileChangesOfCommits(
     commits: {
@@ -140,6 +167,7 @@ export class Rebaser {
                 dependencies: [],
                 hash: commit.hash,
                 path: diffChange.path,
+                originalHash: commit.hash,
               },
             ];
             break;
@@ -155,6 +183,7 @@ export class Rebaser {
                   .filter((prevChange) => prevChange.path === diffChange.path)
                   .map((prevChange) => prevChange.index),
                 hash: commit.hash,
+                originalHash: commit.hash,
                 path: diffChange.path,
               },
             ];
@@ -173,6 +202,7 @@ export class Rebaser {
                   )
                   .map((prevChange) => prevChange.index),
                 hash: commit.hash,
+                originalHash: commit.hash,
                 oldFileName: diffChange.pathBefore,
                 path: diffChange.pathAfter,
               },
@@ -367,6 +397,7 @@ export class Rebaser {
           changes: [],
           fileName: change.path,
           hasChangeSetBeforeDependent: false,
+          hasChanges: false,
         };
         trash.push(commitFile);
       }
@@ -444,7 +475,7 @@ export class Rebaser {
 
     return changesCopy;
   }
-  getRebaseCommits(): RebaseCommit[] {
+  private getRebaseCommits(): RebaseCommit[] {
     const rebaseCommitsByHash = this._commits.reduce<
       Record<string, RebaseCommit>
     >((acc, commit) => {
@@ -474,13 +505,13 @@ export class Rebaser {
 
       if (change.dependencies.length) {
         for (const dependency of change.dependencies) {
-          const dependentIndex = changesCopy.findIndex(
+          const dependent = changesCopy.find(
             (otherChange) => otherChange.index === dependency
-          );
+          )!;
           const changeIndex = changesCopy.indexOf(change);
-          const isInTrash = dependentIndex === -1;
+          const isInTrash = dependent.hash === "trash";
 
-          if (dependentIndex > changeIndex || isInTrash) {
+          if (changesCopy.indexOf(dependent) > changeIndex && !isInTrash) {
             isSetBeforeDependent = true;
             break;
           }
@@ -488,19 +519,20 @@ export class Rebaser {
       }
 
       if (file) {
-        rebaseCommit.hasChangeSetBeforeDependent = isSetBeforeDependent
-          ? true
-          : rebaseCommit.hasChangeSetBeforeDependent;
-        file.hasChangeSetBeforeDependent = isSetBeforeDependent
-          ? true
-          : file.hasChangeSetBeforeDependent;
+        rebaseCommit.hasChangeSetBeforeDependent =
+          rebaseCommit.hasChangeSetBeforeDependent || isSetBeforeDependent;
+        file.hasChangeSetBeforeDependent =
+          file.hasChangeSetBeforeDependent || isSetBeforeDependent;
 
         file.changes.push({
           ...change,
           isSetBeforeDependent,
         });
       } else {
-        rebaseCommit.hasChangeSetBeforeDependent = isSetBeforeDependent;
+        rebaseCommit.hasChangeSetBeforeDependent =
+          rebaseCommit.hasChangeSetBeforeDependent
+            ? true
+            : isSetBeforeDependent;
         rebaseCommit.files.push({
           fileName: change.path,
           changes: [
@@ -510,14 +542,39 @@ export class Rebaser {
             },
           ],
           hasChangeSetBeforeDependent: isSetBeforeDependent,
+          hasChanges: false,
         });
+      }
+    }
+
+    for (const hash in rebaseCommitsByHash) {
+      const commit = rebaseCommitsByHash[hash];
+
+      for (const file of commit.files) {
+        // If no original reference it has changes
+        if (!this._originalChangeReferences[hash]?.[file.fileName]) {
+          file.hasChanges = true;
+          continue;
+        }
+
+        const originalChangeIndexes = file.changes.map(
+          (change) => change.index
+        );
+        const changeIndexes =
+          this._originalChangeReferences[hash]?.[file.fileName];
+        const hasFileChanges =
+          String(originalChangeIndexes) !== String(changeIndexes);
+
+        if (hasFileChanges) {
+          file.hasChanges = true;
+        }
       }
     }
 
     return this._commits.map((commit) => rebaseCommitsByHash[commit.hash]);
   }
   private generateHash() {
-    return Math.random().toString(36).substring(2, 15);
+    return "new-" + Math.random().toString(36).substring(2, 15);
   }
   addCommit(message: string) {
     const hash = this.generateHash();
@@ -526,6 +583,8 @@ export class Rebaser {
       hash,
       message,
     });
+
+    this._rebaseCommits = this.getRebaseCommits();
   }
   removeCommit(hash: string) {
     const commit = this._commits.find((commit) => commit.hash === hash);
@@ -540,6 +599,7 @@ export class Rebaser {
 
     const index = this._commits.indexOf(commit);
     this._commits.splice(index, 1);
+    this._rebaseCommits = this.getRebaseCommits();
   }
   updateCommitMessage(hash: string, newMessage: string) {
     const commit = this._commits.find((commit) => commit.hash === hash);
@@ -549,6 +609,8 @@ export class Rebaser {
     }
 
     commit.message = newMessage;
+
+    this._rebaseCommits = this.getRebaseCommits();
   }
   toggleRebase() {
     if (this._isRebasing) {
@@ -656,12 +718,16 @@ export class Rebaser {
     this._commits.splice(targetIndex, 0, commit);
 
     this.sortChanges(this._changes);
+
+    this._rebaseCommits = this.getRebaseCommits();
   }
   // Change to using the index, which should be called changeIndex
   moveChange(fileName: string, changeRef: FileChange, targetHash: string) {
     const change = this.getChangeFromRef(fileName, changeRef);
     change.hash = targetHash;
     this.sortChanges(this._changes);
+
+    this._rebaseCommits = this.getRebaseCommits();
   }
   showFileDiff() {}
   push() {}
@@ -730,5 +796,7 @@ export class Rebaser {
     }
 
     this.sortChanges(this._changes);
+
+    this._rebaseCommits = this.getRebaseCommits();
   }
 }

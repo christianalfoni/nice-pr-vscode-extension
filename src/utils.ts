@@ -27,6 +27,20 @@ async function executeGitCommand(
   }
 }
 
+async function executeGitCommandWithBinaryOutput(
+  repo: Repository,
+  command: string
+): Promise<Buffer> {
+  const { stdout } = await execAsync(`git ${command}`, {
+    cwd: repo.rootUri.fsPath,
+    encoding: "buffer",
+    // 20MB max buffer
+    maxBuffer: 20 * 10 * 1024 * 1024,
+  });
+
+  return stdout;
+}
+
 export async function getGitDiff(
   repo: Repository,
   fromHash: string,
@@ -133,6 +147,7 @@ export function mapChunkToFileChange({
       index,
       dependencies,
       hash,
+      originalHash: hash,
       path,
     };
   }
@@ -143,6 +158,7 @@ export function mapChunkToFileChange({
     index,
     dependencies,
     hash,
+    originalHash: hash,
     path,
     oldStart: chunk.fromFileRange.start,
     oldLines: chunk.fromFileRange.lines,

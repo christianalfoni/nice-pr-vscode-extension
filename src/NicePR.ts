@@ -387,7 +387,7 @@ ${JSON.stringify(diffs)}`,
           throw new Error("Can not push without rebasing");
         }
 
-        const rebasedCommits = this.mode.rebaser.getRebaseCommits();
+        const rebasedCommits = this.mode.rebaser.rebaseCommits;
         const invalidCommit = rebasedCommits.find(
           (commit) => commit.hasChangeSetBeforeDependent
         );
@@ -410,12 +410,22 @@ ${JSON.stringify(diffs)}`,
           throw new Error("Can not push without rebasing");
         }
 
-        await this.rebase();
-        await executeGitCommand(
-          this._repo,
-          `push origin ${this._branch} --force-with-lease`
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: "Rebasing and pushing to remote...",
+            cancellable: false,
+          },
+          async (progress) => {
+            await this.rebase();
+            await executeGitCommand(
+              this._repo,
+              `push origin ${this._branch} --force-with-lease`
+            );
+            this.setRebaseMode("IDLE");
+          }
         );
-        this.setRebaseMode("IDLE");
+
         return;
       }
     }
@@ -506,9 +516,9 @@ ${JSON.stringify(diffs)}`,
       scheme: "scm-history-item",
       path: `${this._repo.rootUri.path}/rebased/${commitParentId}..${commit.hash}`,
     });
-    const rebasedCommit = rebaser
-      .getRebaseCommits()
-      .find((rebasedCommit) => rebasedCommit.hash === commit.hash);
+    const rebasedCommit = rebaser.rebaseCommits.find(
+      (rebasedCommit) => rebasedCommit.hash === commit.hash
+    );
 
     if (!rebasedCommit) {
       throw new Error("Commit not found in rebased commits");
@@ -675,7 +685,7 @@ ${JSON.stringify(diffs)}`,
   }
   async rebase() {
     const rebaser = this.getRebaser();
-    const commits = rebaser.getRebaseCommits();
+    const commits = rebaser.rebaseCommits;
     const commitsToHandle = commits
       .filter((commit) => Boolean(commit.files.length))
       .reverse();
@@ -686,6 +696,8 @@ ${JSON.stringify(diffs)}`,
       const fileOperations: RebaseFileOperation[] = [];
 
       for (const file of commit.files) {
+        // We need to identify if this file is a binary, make that happen!
+        // If it is a binary, we need to diverge the logic
         const fileOperationChange = getFileOperationChangeFromChanges(
           file.changes
         );
@@ -700,7 +712,6 @@ ${JSON.stringify(diffs)}`,
         )
           // There is no file yet, so we use empty string as initial content
           .catch(() => "");
-        // We have to await it to ensure order of operations and updates to file states
 
         switch (fileOperationChange.type) {
           case FileChangeType.ADD:

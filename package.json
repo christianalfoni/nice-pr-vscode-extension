@@ -27,11 +27,7 @@
       "nice-pr-sidebar": [
         {
           "id": "nicePrRebaseView",
-          "name": "Rebased Commits"
-        },
-        {
-          "id": "nicePrView",
-          "name": "Initial Commits"
+          "name": "Initializing repository"
         }
       ]
     },
@@ -47,7 +43,7 @@
       {
         "command": "nicePr.startRebase",
         "title": "Start Rebase",
-        "icon": "$(git-pull-request-draft)"
+        "icon": "$(edit)"
       },
       {
         "command": "nicePr.cancelRebase",
@@ -94,7 +90,7 @@
       },
       {
         "command": "nicePr.revertBranch",
-        "title": "Revert branch",
+        "title": "Revert rebase",
         "icon": "$(discard)"
       }
     ],
@@ -107,7 +103,7 @@
         },
         {
           "command": "nicePr.revertBranch",
-          "when": "view == nicePrRebaseView && nicePr.mode == 'IDLE' && nicePr.hasBackupBranch",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'IDLE'",
           "group": "navigation"
         },
         {

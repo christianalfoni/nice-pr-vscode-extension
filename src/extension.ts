@@ -2,16 +2,11 @@ import * as vscode from "vscode";
 
 /*
   - Extend binary type with content and use executeGitCommand to read state of binary at different com
-  - Always show revert, but show message if no backup branch
+  - Rebase diff does not show as deletion
   - Option to choose how dependencies should work
       - Show warning
       - Block and show message
       - Move dependencies along
-  - Rename should not be green, should be blue or something
-  - Gray on commit color, could add a flag for new commit… can be green, maybe blue when you change message
-  - Rebase diff does not show as deletion
-  - Show progress when rebase and push
-  - Current commits (origin? remote? local? whatever)
   
   - Create crash report feature
   - Write final file operations snapshot tests from diffs and making changes, remember to write for trash as well
@@ -31,92 +26,245 @@ import {
 import { InMemoryContentProvider, NicePR } from "./NicePR.js";
 import { API, Repository } from "./git.js";
 
-type CommitItem = {
-  hash: string;
-  message: string;
-};
-
-class BranchTreeDataProvider
-  implements vscode.TreeDataProvider<CommitItem | string>
-{
-  private _onDidChangeTreeData = new vscode.EventEmitter<
-    CommitItem | string | undefined
-  >();
-  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
-  private view: vscode.TreeView<CommitItem | string>;
-
-  constructor(private initializer: Initializer) {
-    vscode.window.registerTreeDataProvider("nicePrView", this);
-    this.view = vscode.window.createTreeView("nicePrView", {
-      treeDataProvider: this,
-      showCollapseAll: false,
-    });
-    this.initializer.onDidChange(() => this.refresh());
+class CommitItem extends vscode.TreeItem {
+  toJSON() {
+    return {
+      type: "CommitItem" as const,
+      message: this.message,
+      hash: this.hash,
+    };
   }
+  constructor(public readonly message: string, public readonly hash: string) {
+    super(message);
 
-  async getTreeItem(element: CommitItem | string): Promise<vscode.TreeItem> {
-    if (typeof element === "string") {
-      return new vscode.TreeItem(element);
-    }
+    this.description = `${hash.substring(0, 7)}`;
 
-    const item = new vscode.TreeItem(element.message);
-    item.description = `${element.hash.substring(0, 7)}`;
-    item.tooltip = `${element.message}\n${element.hash}`;
-    item.iconPath = new vscode.ThemeIcon("git-commit");
-    item.command = {
+    this.tooltip = `${message}\n${hash}`;
+    this.iconPath = new vscode.ThemeIcon("git-commit");
+    this.command = {
       command: "nicePr.showDiff",
       title: "Show Diff",
-      arguments: [element],
+      arguments: [this],
     };
-
-    return item;
-  }
-
-  async getChildren(): Promise<(CommitItem | string)[]> {
-    return this.initializer.state.state === "INITIALIZED"
-      ? this.initializer.state.nicePR.commits
-      : [];
-  }
-
-  refresh(): void {
-    this.view.title = "Initial Commits";
-    this._onDidChangeTreeData.fire(undefined);
   }
 }
 
-interface TrashItem {
-  type: "trash";
-  trash: RebaseCommitFile[];
+class RebaseChangeItem extends vscode.TreeItem {
+  static getLabel(change: RebaseCommitFileChange) {
+    if (change.type === FileChangeType.ADD) {
+      return "Add file";
+    }
+
+    if (change.type === FileChangeType.RENAME) {
+      return "Rename file from " + change.oldFileName;
+    }
+
+    if (change.type === FileChangeType.DELETE) {
+      return "Delete file";
+    }
+
+    if (isTextFileChange(change)) {
+      return change.lines.join("\n");
+    }
+
+    return "unknown";
+  }
+  toJSON() {
+    return {
+      type: "RebaseChangeItem" as const,
+      ref: this.ref,
+      fileName: this.fileName,
+      change: this.change,
+    };
+  }
+  constructor(
+    public readonly ref: string,
+    public readonly fileName: string,
+    public readonly change: RebaseCommitFileChange
+  ) {
+    super(RebaseChangeItem.getLabel(change));
+    this.id = "RebaseChangeItem-" + ref + "-" + fileName + "-" + change.index;
+    this.iconPath = this.getIcon();
+    this.contextValue = "droppableHunk";
+    this.command = this.getCommand();
+  }
+  private getCommand() {
+    if (isTextFileChange(this.change)) {
+      return {
+        command: "nicePr.showFileDiff",
+        title: "Show File Changes",
+        arguments: [this],
+      };
+    }
+  }
+  private getIcon() {
+    if (this.change.isSetBeforeDependent) {
+      return new vscode.ThemeIcon(
+        "warning",
+        new vscode.ThemeColor("charts.yellow")
+      );
+    }
+
+    if (this.change.type === FileChangeType.ADD) {
+      return new vscode.ThemeIcon(
+        "plus",
+        new vscode.ThemeColor("charts.green")
+      );
+    }
+
+    if (this.change.type === FileChangeType.RENAME) {
+      return new vscode.ThemeIcon(
+        "arrow-right",
+        new vscode.ThemeColor("charts.blue")
+      );
+    }
+
+    if (this.change.type === FileChangeType.DELETE) {
+      return new vscode.ThemeIcon("x", new vscode.ThemeColor("charts.red"));
+    }
+
+    if (isTextFileChange(this.change)) {
+      const modificationType = getModificationTypeFromChange(this.change);
+      return new vscode.ThemeIcon(
+        "code",
+        new vscode.ThemeColor(
+          modificationType === "ADD"
+            ? "charts.green"
+            : modificationType === "DELETE"
+            ? "charts.red"
+            : "charts.yellow"
+        )
+      );
+    }
+  }
 }
 
-interface RebaseCommitItem {
-  type: "commit";
-  commit: RebaseCommit;
+class RebaseFileItem extends vscode.TreeItem {
+  public readonly fileName: string;
+  toJSON() {
+    return {
+      type: "RebaseFileItem" as const,
+      ref: this.ref,
+      file: this.file,
+      fileName: this.fileName,
+    };
+  }
+  constructor(
+    public readonly ref: string,
+    public readonly file: RebaseCommitFile
+  ) {
+    const parts = file.fileName.split("/");
+    const lastFileNamePart = parts.pop() || "";
+
+    super(lastFileNamePart, vscode.TreeItemCollapsibleState.Collapsed);
+
+    this.id = "RebaseFileItem-" + ref + "-" + file.fileName;
+    this.fileName = file.fileName;
+    this.description = vscode.workspace.asRelativePath(parts.join("/"));
+
+    this.iconPath = this.getIcon();
+    this.tooltip = file.fileName;
+    this.contextValue = "droppableFile";
+    this.command = {
+      command: "nicePr.showFileDiff",
+      title: "Show File Changes",
+      arguments: [this],
+    };
+  }
+  private getIcon() {
+    if (this.file.hasChangeSetBeforeDependent) {
+      return new vscode.ThemeIcon(
+        "warning",
+        new vscode.ThemeColor("debugTokenExpression.error")
+      );
+    }
+    return new vscode.ThemeIcon(
+      "file",
+      this.file.hasChanges ? new vscode.ThemeColor("charts.orange") : undefined
+    );
+  }
 }
 
-interface RebasedCommitItem {
-  type: "rebasedCommit";
-  commit: RebaseCommit;
+class TrashItem extends vscode.TreeItem {
+  toJSON() {
+    return {
+      type: "TrashItem" as const,
+    };
+  }
+  constructor(public readonly trash: RebaseCommitFile[]) {
+    super("Trash", vscode.TreeItemCollapsibleState.Expanded);
+    this.id = "TrashItem";
+    this.iconPath = new vscode.ThemeIcon(
+      "trash",
+      new vscode.ThemeColor("charts.purple")
+    );
+    this.contextValue = "trash";
+  }
 }
 
-interface RebaseFileItem {
-  type: "file";
-  file: RebaseCommitFile;
-  fileChangeType: FileChangeType;
-  fileName: string;
-  // Ref can be a hash or "trash"
-  ref: string;
+class RebaseCommitItem extends vscode.TreeItem {
+  toJSON() {
+    return {
+      type: "RebaseCommitItem" as const,
+      commit: this.commit,
+    };
+  }
+  constructor(public readonly commit: RebaseCommit) {
+    super(commit.message, vscode.TreeItemCollapsibleState.Expanded);
+
+    // Set contextValue based on whether commit has changes
+    this.id = "RebaseCommitItem-" + commit.hash;
+    this.contextValue =
+      this.commit.files.length === 0 ? "emptyCommit" : "droppableCommit";
+    this.iconPath = this.getIcon();
+    this.command = {
+      command: "nicePr.editCommitMessage",
+      title: "Edit Commit Message",
+      arguments: [this.commit],
+    };
+  }
+  private getIcon() {
+    if (this.commit.hasChangeSetBeforeDependent) {
+      return new vscode.ThemeIcon(
+        "warning",
+        new vscode.ThemeColor("debugTokenExpression.error")
+      );
+    }
+
+    return new vscode.ThemeIcon(
+      this.commit.files.length === 0 ? "kebab-vertical" : "git-commit",
+      this.commit.hash.startsWith("new-")
+        ? new vscode.ThemeColor("charts.orange")
+        : undefined
+    );
+  }
 }
 
-interface RebaseChangeItem {
-  type: "change";
-  change: RebaseCommitFileChange;
-  // Ref can be a hash or "trash"
-  ref: string;
-  fileName: string;
+class RebasedCommitItem extends vscode.TreeItem {
+  toJSON() {
+    return {
+      type: "RebasedCommitItem" as const,
+      commit: this.commit,
+    };
+  }
+  constructor(public readonly commit: RebaseCommit) {
+    super(commit.message, vscode.TreeItemCollapsibleState.None);
+    this.id = "RebasedCommitItem-" + commit.hash;
+    this.iconPath = new vscode.ThemeIcon(
+      "git-commit",
+      new vscode.ThemeColor("charts.orange")
+    );
+    this.command = {
+      command: "nicePr.showRebasedDiff",
+      title: "Show rebased diff",
+      // @ts-ignore
+      arguments: [commit],
+    };
+  }
 }
 
 type RebaseTreeItem =
+  | CommitItem
   | RebasedCommitItem
   | TrashItem
   | RebaseCommitItem
@@ -147,7 +295,7 @@ class RebaseTreeDataProvider
     sources.forEach((source) => {
       dataTransfer.set(
         this.dragMimeTypes[0],
-        new vscode.DataTransferItem(source)
+        new vscode.DataTransferItem(source.toJSON())
       );
     });
   }
@@ -161,34 +309,38 @@ class RebaseTreeDataProvider
 
     const nicePR = this.initializer.state.nicePR;
     const rebaser = nicePR.getRebaser();
-
-    const source: RebaseTreeItem = dataTransfer.get(
+    const sourceData: ReturnType<RebaseTreeItem["toJSON"]> = dataTransfer.get(
       this.dragMimeTypes[0]
     )?.value;
 
-    if (!source) {
+    if (!sourceData) {
       return;
     }
 
-    // You can not drag and drop rebased commits
-    if (source.type === "rebasedCommit" || target.type === "rebasedCommit") {
+    // You can not drag and drop rebased commits or original commits
+    if (
+      sourceData.type === "RebasedCommitItem" ||
+      target instanceof RebasedCommitItem ||
+      sourceData.type === "CommitItem" ||
+      target instanceof CommitItem
+    ) {
       return;
     }
 
-    if (source.type === "trash") {
+    if (sourceData.type === "TrashItem") {
       return;
     }
 
-    if (source.type === "commit") {
+    if (sourceData.type === "RebaseCommitItem") {
       const targetRef =
-        target.type === "trash"
+        target instanceof TrashItem
           ? "trash"
-          : target.type === "commit"
+          : target instanceof RebaseCommitItem
           ? target.commit.hash
           : target.ref;
-      rebaser.moveCommit(source.commit.hash, targetRef);
+      rebaser.moveCommit(sourceData.commit.hash, targetRef);
       this._onDidChangeTreeData.fire(undefined);
-      const fileNames = source.commit.files.map((file) => file.fileName);
+      const fileNames = sourceData.commit.files.map((file) => file.fileName);
 
       fileNames.forEach((fileName) => {
         const hashesForFile = rebaser.getHashesForFile(fileName);
@@ -200,229 +352,39 @@ class RebaseTreeDataProvider
     }
 
     const changes =
-      source.type === "file" ? source.file.changes : [source.change];
+      sourceData.type === "RebaseFileItem"
+        ? sourceData.file.changes
+        : [sourceData.change];
 
     changes.forEach((change) => {
-      if (target.type === "trash") {
-        rebaser.moveChange(source.fileName, change, "trash");
+      if (target instanceof TrashItem) {
+        rebaser.moveChange(sourceData.fileName, change, "trash");
         return;
       }
 
       const targetRef =
-        target.type === "commit" ? target.commit.hash : target.ref;
+        target instanceof RebaseCommitItem ? target.commit.hash : target.ref;
 
-      if (source.ref === "trash") {
-        rebaser.moveChange(source.fileName, change, targetRef);
+      if (sourceData.ref === "trash") {
+        rebaser.moveChange(sourceData.fileName, change, targetRef);
         return;
       }
 
-      rebaser.moveChange(source.fileName, change, targetRef);
+      rebaser.moveChange(sourceData.fileName, change, targetRef);
     });
 
     this._onDidChangeTreeData.fire(undefined);
 
     nicePR.updateDiffView({
-      fileName: source.fileName,
-      hash: source.ref,
+      fileName: sourceData.fileName,
+      hash: sourceData.ref,
     });
   }
 
-  // This is where we RENDER the tree item
-  async getTreeItem(element: RebaseTreeItem): Promise<vscode.TreeItem> {
-    if (element.type === "rebasedCommit") {
-      const item = new vscode.TreeItem(element.commit.message);
-      item.iconPath = new vscode.ThemeIcon("git-commit");
-      item.contextValue = "droppableCommit";
-      item.command = {
-        command: "nicePr.showRebasedDiff",
-        title: "Show rebased diff",
-        // @ts-ignore
-        arguments: [element.commit],
-      };
-      return item;
-    }
-
-    if (
-      element.type === "change" &&
-      element.change.type === FileChangeType.ADD
-    ) {
-      const change = element.change;
-      const item = new vscode.TreeItem("Add file");
-      item.iconPath = new vscode.ThemeIcon(
-        change.isSetBeforeDependent ? "warning" : "plus",
-        new vscode.ThemeColor(
-          change.isSetBeforeDependent
-            ? "debugTokenExpression.error"
-            : "gitDecoration.addedResourceForeground"
-        )
-      );
-      item.contextValue = "droppableHunk";
-
-      return item;
-    }
-
-    if (
-      element.type === "change" &&
-      element.change.type === FileChangeType.RENAME
-    ) {
-      const change = element.change;
-      const item = new vscode.TreeItem("Rename from " + change.oldFileName);
-      item.iconPath = new vscode.ThemeIcon(
-        change.isSetBeforeDependent ? "warning" : "arrow-right",
-        new vscode.ThemeColor(
-          change.isSetBeforeDependent
-            ? "debugTokenExpression.error"
-            : "gitDecoration.renamedResourceForeground"
-        )
-      );
-      item.contextValue = "droppableHunk";
-
-      return item;
-    }
-
-    if (
-      element.type === "change" &&
-      element.change.type === FileChangeType.DELETE
-    ) {
-      const change = element.change;
-      const item = new vscode.TreeItem("Delete");
-      item.iconPath = new vscode.ThemeIcon(
-        change.isSetBeforeDependent ? "warning" : "x",
-        new vscode.ThemeColor(
-          change.isSetBeforeDependent
-            ? "debugTokenExpression.error"
-            : "gitDecoration.deletedResourceForeground"
-        )
-      );
-      item.contextValue = "droppableHunk";
-
-      return item;
-    }
-
-    if (element.type === "change" && isTextFileChange(element.change)) {
-      const change = element.change;
-      const modificationType = getModificationTypeFromChange(change);
-      const item = new vscode.TreeItem(change.lines.join("\n"));
-      const hasWarning = change.isSetBeforeDependent;
-      item.iconPath = new vscode.ThemeIcon(
-        hasWarning ? "warning" : "code",
-        new vscode.ThemeColor(
-          hasWarning
-            ? "debugTokenExpression.error"
-            : modificationType === "ADD"
-            ? "gitDecoration.addedResourceForeground"
-            : modificationType === "DELETE"
-            ? "gitDecoration.deletedResourceForeground"
-            : "gitDecoration.modifiedResourceForeground"
-        )
-      );
-      item.contextValue = "droppableHunk";
-      // Add command to show diff when clicking the file
-      item.command = {
-        command: "nicePr.showFileDiff",
-        title: "Show File Changes",
-        arguments: [element],
-      };
-      return item;
-    }
-
-    if (element.type === "file") {
-      const parts = element.fileName.split("/");
-      const fileName = parts.pop() || "";
-
-      const item = new vscode.TreeItem(
-        fileName,
-        vscode.TreeItemCollapsibleState.Collapsed
-      );
-
-      item.description = vscode.workspace.asRelativePath(parts.join("/"));
-
-      const hasWarning = element.file.hasChangeSetBeforeDependent;
-
-      item.iconPath = new vscode.ThemeIcon(
-        hasWarning ? "warning" : "file",
-        new vscode.ThemeColor(
-          hasWarning
-            ? "debugTokenExpression.error"
-            : element.fileChangeType === FileChangeType.MODIFY
-            ? "gitDecoration.modifiedResourceForeground"
-            : element.fileChangeType === FileChangeType.ADD
-            ? "gitDecoration.addedResourceForeground"
-            : element.fileChangeType === FileChangeType.DELETE
-            ? "gitDecoration.deletedResourceForeground"
-            : "gitDecoration.renamedResourceForeground"
-        )
-      );
-      item.tooltip = element.fileName;
-      item.contextValue = "droppableFile"; // Change to droppable
-      // Add command to show diff when clicking the file
-      item.command = {
-        command: "nicePr.showFileDiff",
-        title: "Show File Changes",
-        arguments: [element],
-      };
-      return item;
-    }
-
-    if (element.type === "trash") {
-      const item = new vscode.TreeItem(
-        "Trash",
-        vscode.TreeItemCollapsibleState.Expanded
-      );
-      item.iconPath = new vscode.ThemeIcon(
-        "trash",
-        new vscode.ThemeColor("debugTokenExpression.error")
-      );
-      item.contextValue = "trash";
-      return item;
-    }
-
-    if (element.type === "commit") {
-      const item = new vscode.TreeItem(
-        element.commit.message,
-        vscode.TreeItemCollapsibleState.Expanded
-      );
-      const hasWarning = element.commit.hasChangeSetBeforeDependent;
-      item.iconPath = new vscode.ThemeIcon(
-        element.commit.files.length === 0
-          ? "kebab-vertical"
-          : hasWarning
-          ? "warning"
-          : "git-commit",
-        new vscode.ThemeColor(
-          hasWarning
-            ? "debugTokenExpression.error"
-            : "scmGraph.historyItemRefColor"
-        )
-      );
-      // Set contextValue based on whether commit has changes
-      item.contextValue =
-        element.commit.files.length === 0 ? "emptyCommit" : "droppableCommit";
-      item.command = {
-        command: "nicePr.editCommitMessage",
-        title: "Edit Commit Message",
-        arguments: [element.commit],
-      };
-      return item;
-    }
-
-    const item = new vscode.TreeItem(
-      // @ts-ignore
-      element.commit.message,
-      vscode.TreeItemCollapsibleState.Expanded
-    );
-    item.iconPath = new vscode.ThemeIcon(
-      // @ts-ignore
-      element.commit.changeIds.length === 0 ? "kebab-vertical" : "git-commit"
-    );
-    item.contextValue = "droppableCommit";
-    item.command = {
-      command: "nicePr.editCommitMessage",
-      title: "Edit Commit Message",
-      // @ts-ignore
-      arguments: [element.commit],
-    };
-    return item;
+  getTreeItem(
+    element: RebaseTreeItem
+  ): vscode.TreeItem | Thenable<vscode.TreeItem> {
+    return element;
   }
 
   // This is where we build up the tree items
@@ -433,69 +395,49 @@ class RebaseTreeDataProvider
 
     const mode = this.initializer.state.nicePR.mode;
 
-    if (
-      mode.mode === "IDLE" ||
-      mode.mode === "PUSHING" ||
-      mode.mode === "SUGGESTING"
-    ) {
+    if (mode.mode === "PUSHING" || mode.mode === "SUGGESTING") {
       return [];
     }
 
+    if (mode.mode === "IDLE") {
+      return this.initializer.state.nicePR.commits.map(
+        (commit) => new CommitItem(commit.message, commit.hash)
+      );
+    }
+
     const rebaser = mode.rebaser;
-    const rebaseCommits = rebaser.getRebaseCommits();
+    const rebaseCommits = rebaser.rebaseCommits;
 
     if (mode.mode === "READY_TO_PUSH") {
       return rebaseCommits
         .filter((commit) => Boolean(commit.files.length))
-        .map((commit) => ({ type: "rebasedCommit", commit }));
+        .map((commit) => new RebasedCommitItem(commit));
     }
 
     if (!element) {
       return [
-        {
-          type: "trash",
-          trash: rebaser.getTrash(),
-        },
-        ...rebaseCommits.map((commit) => ({
-          type: "commit" as const,
-          commit,
-        })),
+        new TrashItem(rebaser.getTrash()),
+        ...rebaseCommits.map((commit) => new RebaseCommitItem(commit)),
       ];
     }
 
-    if (element.type === "trash") {
-      return element.trash.map((file) => ({
-        type: "file" as const,
-        ref: "trash",
-        fileChangeType: rebaser.getFileChangeType(file.fileName),
-        file,
-        fileName: file.fileName,
-        changes: file.changes,
-      }));
+    if (element instanceof TrashItem) {
+      return element.trash.map((file) => new RebaseFileItem("trash", file));
     }
 
-    if (element.type === "commit") {
+    if (element instanceof RebaseCommitItem) {
       const commit = element.commit;
 
-      return commit.files.map((file) => ({
-        type: "file" as const,
-        file,
-        ref: commit.hash,
-        fileChangeType: rebaser.getFileChangeType(file.fileName),
-        fileName: file.fileName,
-        changes: file.changes,
-      }));
+      return commit.files.map((file) => new RebaseFileItem(commit.hash, file));
     }
 
-    if (element.type === "file") {
+    if (element instanceof RebaseFileItem) {
       const changes = element.file.changes;
 
-      return changes.map((change) => ({
-        type: "change",
-        change,
-        fileName: element.fileName,
-        ref: element.ref,
-      }));
+      return changes.map(
+        (change) =>
+          new RebaseChangeItem(element.ref, element.file.fileName, change)
+      );
     }
 
     return [];
@@ -512,16 +454,17 @@ class RebaseTreeDataProvider
       title = this.initializer.state.error;
     } else {
       const nicePR = this.initializer.state.nicePR;
-      title = "Rebased commits:  Ready";
+      title = "Commits";
 
       if (nicePR.mode.mode === "REBASING") {
-        title = "Rebased commits: Rebasing";
+        title = "Rebasing";
       } else if (nicePR.mode.mode === "READY_TO_PUSH") {
-        title = "Rebased commits: Reviewing";
+        title = "Reviewing";
       }
     }
 
     this.view.title = title;
+
     this._onDidChangeTreeData.fire(undefined);
   }
 }
@@ -627,16 +570,19 @@ class Initializer {
   private async initializeRepo(repo: Repository) {
     try {
       const branch = repo.state.HEAD?.name;
+
       const abortController = new AbortController();
       const stateChangeDisposer = repo.state.onDidChange(() => {
         // Any change to the branch while initializing or initialized should
         // trigger a new initialize
+
         if (
           (this.state.state === "INITIALIZING" ||
             this.state.state === "INITIALIZED") &&
           this.state.repo === repo &&
           repo.state.HEAD?.name !== branch
         ) {
+          stateChangeDisposer.dispose();
           this.initializeRepo(repo);
         }
       });
@@ -647,43 +593,46 @@ class Initializer {
         abortController,
         dispose() {
           abortController.abort();
-          stateChangeDisposer.dispose();
         },
       };
 
-      if (branch) {
-        const commits = await getBranchCommits(repo, branch);
-
-        if (abortController.signal.aborted) {
-          return;
-        }
-
-        const contentProvider = this._inMemoryContentProvider;
-
-        const nicePR = new NicePR({
-          contentProvider: this._inMemoryContentProvider,
-          api: this._api,
-          repo,
-          branch,
-          commits,
-        });
-
-        const nicePRChangeDisposer = nicePR.onDidChange(() => {
-          this._onDidChange.fire();
-        });
-
-        this.state = {
-          state: "INITIALIZED",
-          repo,
-          nicePR,
-          dispose() {
-            stateChangeDisposer.dispose();
-            nicePRChangeDisposer.dispose();
-            contentProvider.clearAll();
-            nicePR.dispose();
-          },
-        };
+      // We'll wait for the branch to be available
+      if (!branch) {
+        return;
       }
+
+      const commits = await getBranchCommits(repo, branch);
+
+      if (abortController.signal.aborted) {
+        stateChangeDisposer.dispose();
+        return;
+      }
+
+      const contentProvider = this._inMemoryContentProvider;
+
+      const nicePR = new NicePR({
+        contentProvider: this._inMemoryContentProvider,
+        api: this._api,
+        repo,
+        branch,
+        commits,
+      });
+
+      const nicePRChangeDisposer = nicePR.onDidChange(() => {
+        this._onDidChange.fire();
+      });
+
+      this.state = {
+        state: "INITIALIZED",
+        repo,
+        nicePR,
+        dispose() {
+          stateChangeDisposer.dispose();
+          nicePRChangeDisposer.dispose();
+          contentProvider.clearAll();
+          nicePR.dispose();
+        },
+      };
     } catch (error) {
       this.state = {
         state: "ERROR",
@@ -698,7 +647,6 @@ class Initializer {
 export async function activate(context: vscode.ExtensionContext) {
   const contentProvider = new InMemoryContentProvider();
   const initializer = await Initializer.create(context, contentProvider);
-  const treeDataProvider = new BranchTreeDataProvider(initializer);
   const rebaseTreeDataProvider = new RebaseTreeDataProvider(initializer);
 
   context.subscriptions.push(
@@ -729,12 +677,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
       initializer.state.nicePR.setRebaseMode("REBASING");
     }),
-    vscode.commands.registerCommand("nicePr.revertBranch", () => {
+    vscode.commands.registerCommand("nicePr.revertBranch", async () => {
       if (initializer.state.state !== "INITIALIZED") {
         return;
       }
 
-      initializer.state.nicePR.revertToBackupBranch();
+      try {
+        await initializer.state.nicePR.revertToBackupBranch();
+      } catch (error) {
+        vscode.window.showWarningMessage(String(error).replace("Error: ", ""));
+      }
     }),
     vscode.commands.registerCommand("nicePr.suggest", () => {
       if (initializer.state.state !== "INITIALIZED") {
@@ -798,7 +750,7 @@ export async function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        if (treeItem?.type === "commit") {
+        if (treeItem instanceof RebaseCommitItem) {
           initializer.state.nicePR.removeCommit(treeItem.commit.hash);
         }
       }
@@ -826,7 +778,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         if (
-          (item.type === "file" && item.file.changes.length === 0) ||
+          (item instanceof RebaseFileItem && item.file.changes.length === 0) ||
           item.ref === "trash"
         ) {
           return;
@@ -837,7 +789,7 @@ export async function activate(context: vscode.ExtensionContext) {
           fileName: item.fileName,
           hash: item.ref,
           selection:
-            item.type === "change" &&
+            item instanceof RebaseChangeItem &&
             item.change.type === FileChangeType.MODIFY &&
             item.change.fileType === "text"
               ? {
