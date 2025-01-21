@@ -1,5 +1,474 @@
 import * as vscode from "vscode";
-import { API, Change, Repository, Status } from "./git";
+
+/*
+  - Rebase diff does not show as deletion
+  - Option to choose how dependencies should work
+      - Show warning
+      - Block and show message
+      - Move dependencies along
+  
+  - Create crash report feature
+  - Write final file operations snapshot tests from diffs and making changes, remember to write for trash as well
+*/
+
+import {
+  RebaseCommit,
+  RebaseCommitFile,
+  RebaseCommitFileChange,
+} from "./Rebaser.js";
+import {
+  FileChangeType,
+  getModificationTypeFromChange,
+  isTextFileChange,
+  getBranchCommits,
+} from "./utils.js";
+import { InMemoryContentProvider, NicePR } from "./NicePR.js";
+import { API, Repository } from "./git.js";
+
+class CommitItem extends vscode.TreeItem {
+  toJSON() {
+    return {
+      type: "CommitItem" as const,
+      message: this.message,
+      hash: this.hash,
+    };
+  }
+  constructor(public readonly message: string, public readonly hash: string) {
+    super(message);
+
+    this.description = `${hash.substring(0, 7)}`;
+
+    this.tooltip = `${message}\n${hash}`;
+    this.iconPath = new vscode.ThemeIcon("git-commit");
+    this.command = {
+      command: "nicePr.showDiff",
+      title: "Show Diff",
+      arguments: [this],
+    };
+  }
+}
+
+class RebaseChangeItem extends vscode.TreeItem {
+  static getLabel(change: RebaseCommitFileChange) {
+    if (change.type === FileChangeType.ADD) {
+      return "Add file";
+    }
+
+    if (change.type === FileChangeType.RENAME) {
+      return "Rename file from " + change.oldFileName;
+    }
+
+    if (change.type === FileChangeType.DELETE) {
+      return "Delete file";
+    }
+
+    if (isTextFileChange(change)) {
+      return change.lines.join("\n");
+    }
+
+    return "Binary";
+  }
+  toJSON() {
+    return {
+      type: "RebaseChangeItem" as const,
+      ref: this.ref,
+      fileName: this.fileName,
+      change: this.change,
+    };
+  }
+  constructor(
+    public readonly ref: string,
+    public readonly fileName: string,
+    public readonly change: RebaseCommitFileChange
+  ) {
+    super(RebaseChangeItem.getLabel(change));
+    this.id = "RebaseChangeItem-" + ref + "-" + fileName + "-" + change.index;
+    this.iconPath = this.getIcon();
+    this.contextValue = "droppableHunk";
+    this.command = this.getCommand();
+  }
+  private getCommand() {
+    if (isTextFileChange(this.change)) {
+      return {
+        command: "nicePr.showFileDiff",
+        title: "Show File Changes",
+        arguments: [this],
+      };
+    }
+  }
+  private getIcon() {
+    if (this.change.isSetBeforeDependent) {
+      return new vscode.ThemeIcon(
+        "warning",
+        new vscode.ThemeColor("charts.yellow")
+      );
+    }
+
+    if (this.change.type === FileChangeType.ADD) {
+      return new vscode.ThemeIcon(
+        "plus",
+        new vscode.ThemeColor("charts.green")
+      );
+    }
+
+    if (this.change.type === FileChangeType.RENAME) {
+      return new vscode.ThemeIcon(
+        "arrow-right",
+        new vscode.ThemeColor("charts.blue")
+      );
+    }
+
+    if (this.change.type === FileChangeType.DELETE) {
+      return new vscode.ThemeIcon("x", new vscode.ThemeColor("charts.red"));
+    }
+
+    if (isTextFileChange(this.change)) {
+      const modificationType = getModificationTypeFromChange(this.change);
+      return new vscode.ThemeIcon(
+        "code",
+        new vscode.ThemeColor(
+          modificationType === "ADD"
+            ? "charts.green"
+            : modificationType === "DELETE"
+            ? "charts.red"
+            : "charts.yellow"
+        )
+      );
+    }
+
+    return new vscode.ThemeIcon("file-binary");
+  }
+}
+
+class RebaseFileItem extends vscode.TreeItem {
+  public readonly fileName: string;
+  toJSON() {
+    return {
+      type: "RebaseFileItem" as const,
+      ref: this.ref,
+      file: this.file,
+      fileName: this.fileName,
+    };
+  }
+  constructor(
+    public readonly ref: string,
+    public readonly file: RebaseCommitFile
+  ) {
+    const parts = file.fileName.split("/");
+    const lastFileNamePart = parts.pop() || "";
+
+    super(lastFileNamePart, vscode.TreeItemCollapsibleState.Collapsed);
+
+    this.id = "RebaseFileItem-" + ref + "-" + file.fileName;
+    this.fileName = file.fileName;
+    this.description = vscode.workspace.asRelativePath(parts.join("/"));
+
+    this.iconPath = this.getIcon();
+    this.tooltip = file.fileName;
+    this.contextValue = "droppableFile";
+    this.command = {
+      command: "nicePr.showFileDiff",
+      title: "Show File Changes",
+      arguments: [this],
+    };
+  }
+  private getIcon() {
+    if (this.file.hasChangeSetBeforeDependent) {
+      return new vscode.ThemeIcon(
+        "warning",
+        new vscode.ThemeColor("debugTokenExpression.error")
+      );
+    }
+    return new vscode.ThemeIcon(
+      "file",
+      this.file.hasChanges ? new vscode.ThemeColor("charts.orange") : undefined
+    );
+  }
+}
+
+class TrashItem extends vscode.TreeItem {
+  toJSON() {
+    return {
+      type: "TrashItem" as const,
+    };
+  }
+  constructor(public readonly trash: RebaseCommitFile[]) {
+    super("Trash", vscode.TreeItemCollapsibleState.Expanded);
+    this.id = "TrashItem";
+    this.iconPath = new vscode.ThemeIcon(
+      "trash",
+      new vscode.ThemeColor("charts.purple")
+    );
+    this.contextValue = "trash";
+  }
+}
+
+class RebaseCommitItem extends vscode.TreeItem {
+  toJSON() {
+    return {
+      type: "RebaseCommitItem" as const,
+      commit: this.commit,
+    };
+  }
+  constructor(public readonly commit: RebaseCommit) {
+    super(commit.message, vscode.TreeItemCollapsibleState.Expanded);
+
+    // Set contextValue based on whether commit has changes
+    this.id = "RebaseCommitItem-" + commit.hash;
+    this.contextValue =
+      this.commit.files.length === 0 ? "emptyCommit" : "droppableCommit";
+    this.iconPath = this.getIcon();
+    this.command = {
+      command: "nicePr.editCommitMessage",
+      title: "Edit Commit Message",
+      arguments: [this.commit],
+    };
+  }
+  private getIcon() {
+    if (this.commit.hasChangeSetBeforeDependent) {
+      return new vscode.ThemeIcon(
+        "warning",
+        new vscode.ThemeColor("debugTokenExpression.error")
+      );
+    }
+
+    return new vscode.ThemeIcon(
+      this.commit.files.length === 0 ? "kebab-vertical" : "git-commit",
+      this.commit.hash.startsWith("new-")
+        ? new vscode.ThemeColor("charts.orange")
+        : undefined
+    );
+  }
+}
+
+class RebasedCommitItem extends vscode.TreeItem {
+  toJSON() {
+    return {
+      type: "RebasedCommitItem" as const,
+      commit: this.commit,
+    };
+  }
+  constructor(public readonly commit: RebaseCommit) {
+    super(commit.message, vscode.TreeItemCollapsibleState.None);
+    this.id = "RebasedCommitItem-" + commit.hash;
+    this.iconPath = new vscode.ThemeIcon(
+      "git-commit",
+      new vscode.ThemeColor("charts.orange")
+    );
+    this.command = {
+      command: "nicePr.showRebasedDiff",
+      title: "Show rebased diff",
+      // @ts-ignore
+      arguments: [commit],
+    };
+  }
+}
+
+type RebaseTreeItem =
+  | CommitItem
+  | RebasedCommitItem
+  | TrashItem
+  | RebaseCommitItem
+  | RebaseFileItem
+  | RebaseChangeItem;
+
+class RebaseTreeDataProvider
+  implements vscode.TreeDataProvider<RebaseTreeItem>
+{
+  private _onDidChangeTreeData = new vscode.EventEmitter<
+    RebaseTreeItem | undefined
+  >();
+  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+  private view: vscode.TreeView<RebaseTreeItem>;
+
+  constructor(private initializer: Initializer) {
+    this.view = vscode.window.createTreeView("nicePrRebaseView", {
+      treeDataProvider: this,
+      showCollapseAll: false,
+      dragAndDropController: this,
+    });
+    this.initializer.onDidChange(() => this.refresh());
+  }
+
+  dropMimeTypes = ["application/vnd.code.tree.niceprdrop"] as const;
+  dragMimeTypes = ["application/vnd.code.tree.niceprdrop"] as const;
+  handleDrag(sources: RebaseTreeItem[], dataTransfer: vscode.DataTransfer) {
+    sources.forEach((source) => {
+      dataTransfer.set(
+        this.dragMimeTypes[0],
+        new vscode.DataTransferItem(source.toJSON())
+      );
+    });
+  }
+  handleDrop(
+    target: RebaseTreeItem | undefined,
+    dataTransfer: vscode.DataTransfer
+  ) {
+    if (!target || this.initializer.state.state !== "INITIALIZED") {
+      return;
+    }
+
+    const nicePR = this.initializer.state.nicePR;
+    const rebaser = nicePR.getRebaser();
+    const sourceData: ReturnType<RebaseTreeItem["toJSON"]> = dataTransfer.get(
+      this.dragMimeTypes[0]
+    )?.value;
+
+    if (!sourceData) {
+      return;
+    }
+
+    // You can not drag and drop rebased commits or original commits
+    if (
+      sourceData.type === "RebasedCommitItem" ||
+      target instanceof RebasedCommitItem ||
+      sourceData.type === "CommitItem" ||
+      target instanceof CommitItem
+    ) {
+      return;
+    }
+
+    if (sourceData.type === "TrashItem") {
+      return;
+    }
+
+    if (sourceData.type === "RebaseCommitItem") {
+      const targetRef =
+        target instanceof TrashItem
+          ? "trash"
+          : target instanceof RebaseCommitItem
+          ? target.commit.hash
+          : target.ref;
+      rebaser.moveCommit(sourceData.commit.hash, targetRef);
+      this._onDidChangeTreeData.fire(undefined);
+      const fileNames = sourceData.commit.files.map((file) => file.fileName);
+
+      fileNames.forEach((fileName) => {
+        const hashesForFile = rebaser.getHashesForFile(fileName);
+        hashesForFile.forEach((hash) => {
+          nicePR.updateDiffView({ fileName, hash });
+        });
+      });
+      return;
+    }
+
+    const changes =
+      sourceData.type === "RebaseFileItem"
+        ? sourceData.file.changes
+        : [sourceData.change];
+
+    changes.forEach((change) => {
+      if (target instanceof TrashItem) {
+        rebaser.moveChange(sourceData.fileName, change, "trash");
+        return;
+      }
+
+      const targetRef =
+        target instanceof RebaseCommitItem ? target.commit.hash : target.ref;
+
+      if (sourceData.ref === "trash") {
+        rebaser.moveChange(sourceData.fileName, change, targetRef);
+        return;
+      }
+
+      rebaser.moveChange(sourceData.fileName, change, targetRef);
+    });
+
+    this._onDidChangeTreeData.fire(undefined);
+
+    nicePR.updateDiffView({
+      fileName: sourceData.fileName,
+      hash: sourceData.ref,
+    });
+  }
+
+  getTreeItem(
+    element: RebaseTreeItem
+  ): vscode.TreeItem | Thenable<vscode.TreeItem> {
+    return element;
+  }
+
+  // This is where we build up the tree items
+  async getChildren(element?: RebaseTreeItem): Promise<RebaseTreeItem[]> {
+    if (this.initializer.state.state !== "INITIALIZED") {
+      return [];
+    }
+
+    const mode = this.initializer.state.nicePR.mode;
+
+    if (mode.mode === "PUSHING" || mode.mode === "SUGGESTING") {
+      return [];
+    }
+
+    if (mode.mode === "IDLE") {
+      return this.initializer.state.nicePR.commits.map(
+        (commit) => new CommitItem(commit.message, commit.hash)
+      );
+    }
+
+    const rebaser = mode.rebaser;
+    const rebaseCommits = rebaser.rebaseCommits;
+
+    if (mode.mode === "READY_TO_PUSH") {
+      return rebaseCommits
+        .filter((commit) => Boolean(commit.files.length))
+        .map((commit) => new RebasedCommitItem(commit));
+    }
+
+    if (!element) {
+      return [
+        new TrashItem(rebaser.getTrash()),
+        ...rebaseCommits.map((commit) => new RebaseCommitItem(commit)),
+      ];
+    }
+
+    if (element instanceof TrashItem) {
+      return element.trash.map((file) => new RebaseFileItem("trash", file));
+    }
+
+    if (element instanceof RebaseCommitItem) {
+      const commit = element.commit;
+
+      return commit.files.map((file) => new RebaseFileItem(commit.hash, file));
+    }
+
+    if (element instanceof RebaseFileItem) {
+      const changes = element.file.changes;
+
+      return changes.map(
+        (change) =>
+          new RebaseChangeItem(element.ref, element.file.fileName, change)
+      );
+    }
+
+    return [];
+  }
+
+  refresh(): void {
+    let title: string;
+
+    if (this.initializer.state.state === "IDLE") {
+      title = "No active repository";
+    } else if (this.initializer.state.state === "INITIALIZING") {
+      title = "Initializing repository";
+    } else if (this.initializer.state.state === "ERROR") {
+      title = this.initializer.state.error;
+    } else {
+      const nicePR = this.initializer.state.nicePR;
+      title = "Commits";
+
+      if (nicePR.mode.mode === "REBASING") {
+        title = "Rebasing";
+      } else if (nicePR.mode.mode === "READY_TO_PUSH") {
+        title = "Reviewing";
+      }
+    }
+
+    this.view.title = title;
+
+    this._onDidChangeTreeData.fire(undefined);
+  }
+}
 
 async function getGitExtension() {
   try {
@@ -17,778 +486,324 @@ async function getGitExtension() {
   }
 }
 
-interface GitUriParams {
-  path: string;
-  ref: string;
-  submoduleOf?: string;
-}
-
-interface GitUriOptions {
-  scheme?: string;
-  replaceFileExtension?: boolean;
-  submoduleOf?: string;
-}
-
-export function toGitUri(
-  uri: vscode.Uri,
-  ref: string,
-  options: GitUriOptions = {}
-): vscode.Uri {
-  const params: GitUriParams = {
-    path: uri.fsPath,
-    ref,
-  };
-
-  if (options.submoduleOf) {
-    params.submoduleOf = options.submoduleOf;
-  }
-
-  let path = uri.path;
-
-  if (options.replaceFileExtension) {
-    path = `${path}.git`;
-  } else if (options.submoduleOf) {
-    path = `${path}.diff`;
-  }
-
-  return uri.with({
-    scheme: options.scheme ?? "git",
-    path,
-    query: JSON.stringify(params),
-  });
-}
-
-function toMultiFileDiffEditorUris(
-  change: Change,
-  originalRef: string,
-  modifiedRef: string
-): {
-  originalUri: vscode.Uri | undefined;
-  modifiedUri: vscode.Uri | undefined;
-} {
-  switch (change.status) {
-    case Status.INDEX_ADDED:
-      return {
-        originalUri: undefined,
-        modifiedUri: toGitUri(change.uri, modifiedRef),
-      };
-    case Status.DELETED:
-      return {
-        originalUri: toGitUri(change.uri, originalRef),
-        modifiedUri: undefined,
-      };
-    case Status.INDEX_RENAMED:
-      return {
-        originalUri: toGitUri(change.originalUri, originalRef),
-        modifiedUri: toGitUri(change.uri, modifiedRef),
-      };
-    default:
-      return {
-        originalUri: toGitUri(change.uri, originalRef),
-        modifiedUri: toGitUri(change.uri, modifiedRef),
-      };
-  }
-}
-
-async function isGitRepository(): Promise<boolean> {
-  const gitExtension = await getGitExtension();
-
-  if (!gitExtension) {
-    return false;
-  }
-
-  const api = gitExtension.getAPI(1);
-  return api.repositories.length > 0;
-}
-
-interface CommitItem {
-  message: string;
-  hash: string;
-  action: "pick" | "reword" | "squash" | "drop";
-}
-
-class BranchTreeDataProvider
-  implements
-    vscode.TreeDataProvider<CommitItem | string>,
-    vscode.TreeDragAndDropController<CommitItem | string>
-{
-  private _onDidChangeTreeData = new vscode.EventEmitter<
-    CommitItem | string | undefined
-  >();
-  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
-  private view: vscode.TreeView<CommitItem | string>;
-  private commitsToBePushed: CommitItem[] | null = null;
-  isRebaseMode: boolean = false;
-  isExecutingRebase: boolean = false;
-  isPushingRebase: boolean = false;
-  private rebasedCommits: CommitItem[] = [];
-  dropMimeTypes = ["application/vnd.code.tree.nicePrView"];
-  dragMimeTypes = ["application/vnd.code.tree.nicePrView"];
-
-  constructor() {
-    // Register the tree data provider first
-    vscode.window.registerTreeDataProvider("nicePrView", this);
-
-    // Then create the tree view
-    this.view = vscode.window.createTreeView("nicePrView", {
-      treeDataProvider: this,
-      showCollapseAll: false,
-      dragAndDropController: this,
-    });
-    this.refresh();
-  }
-
-  hasLocalChanges(repo: Repository): boolean {
-    return Boolean(
-      repo.state.untrackedChanges.length || repo.state.workingTreeChanges.length
-    );
-  }
-
-  async showCommitDiff(commit: CommitItem): Promise<void> {
-    const gitExtension = await getGitExtension();
-
-    if (!gitExtension) {
-      return;
+type InitializerState =
+  | {
+      state: "IDLE";
     }
-
-    const api: API = gitExtension.getAPI(1);
-    const repo = api.repositories[0];
-
-    // Get the commit details and its parent
-    const commitDetails = await repo.getCommit(commit.hash);
-    const commitParentId = commitDetails.parents[0] || `${commit.hash}^`;
-
-    // Get all changes between the commit and its parent
-    const changes = await repo.diffBetween(commitParentId, commit.hash);
-
-    // Create the source URI for the multi-diff editor
-    const multiDiffSourceUri = vscode.Uri.from({
-      scheme: "scm-history-item",
-      path: `${repo.rootUri.path}/${commitParentId}..${commit.hash}`,
-    });
-
-    // Map changes to diff resources
-    const resources = changes.map((change) =>
-      toMultiFileDiffEditorUris(change, commitParentId, commit.hash)
-    );
-
-    // Open the multi-file diff editor
-    await vscode.commands.executeCommand(
-      "_workbench.openMultiDiffEditor",
-      {
-        multiDiffSourceUri,
-        title: `${commit.hash.substring(0, 7)} - ${commit.message}`,
-        resources,
-      },
-      {
-        preserveFocus: true,
-        preview: true,
-        viewColumn: vscode.ViewColumn.Active,
-      }
-    );
-  }
-
-  async getTreeItem(element: CommitItem | string): Promise<vscode.TreeItem> {
-    if (typeof element === "string") {
-      return new vscode.TreeItem(element);
+  | {
+      state: "INITIALIZING";
+      repo: Repository;
+      abortController: AbortController;
+      dispose(): void;
     }
-
-    let label = element.message;
-    const item = new vscode.TreeItem(label);
-    item.description = element.hash.substring(0, 7);
-    item.tooltip = `${element.message}\n${element.hash}`;
-
-    if (element.action === "squash") {
-      item.iconPath = new vscode.ThemeIcon("arrow-down");
-    } else if (element.action === "drop") {
-      item.iconPath = new vscode.ThemeIcon("trash");
-    } else {
-      item.iconPath = new vscode.ThemeIcon("git-commit");
+  | {
+      state: "INITIALIZED";
+      repo: Repository;
+      nicePR: NicePR;
+      dispose(): void;
     }
-
-    const isLastCommit =
-      element === this.rebasedCommits[this.rebasedCommits.length - 1];
-    item.contextValue = this.isRebaseMode
-      ? isLastCommit
-        ? "rebaseModeLastNoSquash"
-        : "rebaseMode"
-      : "normalMode";
-
-    item.command = {
-      command: "nicePr.showDiff",
-      title: "Show Diff",
-      arguments: [element],
+  | {
+      state: "ERROR";
+      error: string;
     };
 
-    return item;
+class Initializer {
+  private _onDidChange = new vscode.EventEmitter<void>();
+  readonly onDidChange = this._onDidChange.event;
+  private _state: InitializerState = {
+    state: "IDLE",
+  };
+  get state() {
+    return this._state;
   }
-
-  async toggleDropCommit(commit: CommitItem): Promise<void> {
-    if (!this.isRebaseMode) {
-      return;
+  set state(state) {
+    if ("dispose" in this._state) {
+      this._state.dispose();
     }
 
-    this.rebasedCommits = this.rebasedCommits.map((c) =>
-      c.hash === commit.hash
-        ? { ...c, action: c.action === "drop" ? "pick" : "drop" }
-        : c
-    );
-    this.refresh();
+    this._state = state;
+    this._onDidChange.fire();
   }
-
-  async editCommitMessage(commit: CommitItem): Promise<void> {
-    if (!this.isRebaseMode) {
-      return;
-    }
-
-    const newMessage = await vscode.window.showInputBox({
-      value: commit.message,
-      prompt: "Edit commit message",
-      validateInput: (value) => {
-        return value.trim().length === 0
-          ? "Commit message cannot be empty"
-          : null;
-      },
-    });
-
-    if (newMessage && newMessage !== commit.message) {
-      this.rebasedCommits = this.rebasedCommits.map((c) =>
-        c.hash === commit.hash
-          ? { ...c, message: newMessage, action: "reword" }
-          : c
-      );
-      this.refresh();
-    }
-  }
-
-  async squashCommit(commit: CommitItem): Promise<void> {
-    if (!this.isRebaseMode) {
-      return;
-    }
-
-    this.rebasedCommits = this.rebasedCommits.map((c) =>
-      c.hash === commit.hash
-        ? { ...c, action: c.action === "squash" ? "pick" : "squash" }
-        : c
-    );
-    this.refresh();
-  }
-
-  async getChildren(): Promise<(CommitItem | string)[]> {
-    if (this.isRebaseMode) {
-      return this.rebasedCommits;
-    }
-
+  static async create(
+    context: vscode.ExtensionContext,
+    contentProvider: InMemoryContentProvider
+  ) {
     const gitExtension = await getGitExtension();
+
     if (!gitExtension) {
-      return [];
+      throw new Error("No Git Extension found");
     }
 
-    const api = gitExtension.getAPI(1) as API;
-    if (api.repositories.length === 0) {
-      return [];
+    const api: API = gitExtension.getAPI(1);
+
+    if (!api) {
+      throw new Error("No Git Extension API found");
     }
 
-    const repo = api.repositories[0];
-    const branch = repo.state.HEAD?.name;
-
-    if (!branch || branch === "main" || branch === "master") {
-      return [];
-    }
-
-    try {
-      const commits = await repo.log({
-        range: `origin/main..${branch}`,
-      });
-
-      return commits.map((commit) => ({
-        message: commit.message,
-        hash: commit.hash,
-        action: "pick",
-      }));
-    } catch (e) {
-      console.error("Failed to get commits:", e);
-      return [];
-    }
+    return new Initializer(context, contentProvider, api);
   }
-
-  refresh(): void {
-    let title = "Nice PR";
-    if (this.isPushingRebase) {
-      title = "Pushing rebase...";
-    } else if (this.isExecutingRebase) {
-      title = "Executing rebase...";
-    } else if (this.isRebaseMode) {
-      title = "Rebasing";
-    } else if (this.commitsToBePushed) {
-      title = "Ready to Push";
-    }
-
-    this.view.title = title;
-
-    vscode.commands.executeCommand(
-      "setContext",
-      "nicePr.hasPendingPush",
-      Boolean(this.commitsToBePushed)
-    );
-    vscode.commands.executeCommand(
-      "setContext",
-      "nicePr.isRebaseMode",
-      this.isRebaseMode
-    );
-    vscode.commands.executeCommand(
-      "setContext",
-      "nicePr.isExecutingRebase",
-      this.isExecutingRebase
-    );
-    this._onDidChangeTreeData.fire(undefined);
-  }
-
-  private subscribeToRepository(repo: any, context: vscode.ExtensionContext) {
-    context.subscriptions.push(
-      repo.state.onDidChange(() => {
-        console.log(
-          "Repository state changed:",
-          repo.state.HEAD?.name,
-          this.hasLocalChanges(repo)
-        );
-        this.refresh();
+  constructor(
+    _context: vscode.ExtensionContext,
+    private _inMemoryContentProvider: InMemoryContentProvider,
+    private _api: API
+  ) {
+    _context.subscriptions.push(
+      _api.onDidOpenRepository(async (repo) => {
+        this.initializeRepo(repo);
+      }),
+      _api.onDidCloseRepository((repo) => {
+        if (
+          (this.state.state === "INITIALIZED" ||
+            this.state.state === "INITIALIZING") &&
+          this.state.repo === repo
+        ) {
+          this.state = { state: "IDLE" };
+        }
       })
     );
-  }
 
-  async subscribe(context: vscode.ExtensionContext) {
-    const gitExtension = await getGitExtension();
-    if (gitExtension) {
-      const api = gitExtension.getAPI(1) as API;
+    const initialRepo = _api.repositories[0];
 
-      // Listen to repository changes
-      context.subscriptions.push(
-        api.onDidOpenRepository((repo) => {
-          this.subscribeToRepository(repo, context);
-          this.refresh();
-        }),
-        api.onDidCloseRepository(() => this.refresh())
-      );
-
-      // Subscribe to existing repositories
-      api.repositories.forEach((repo) => {
-        this.subscribeToRepository(repo, context);
-      });
+    if (initialRepo) {
+      this.initializeRepo(initialRepo);
     }
   }
-
-  async toggleRebaseMode(): Promise<void> {
-    const gitExtension = await getGitExtension();
-    if (!gitExtension) {
-      return;
-    }
-
-    const api = gitExtension.getAPI(1) as API;
-    if (api.repositories.length === 0) {
-      return;
-    }
-
-    const repo = api.repositories[0];
-
-    if (await this.hasLocalChanges(repo)) {
-      vscode.window.showErrorMessage(
-        "Cannot enter rebase mode with local changes"
-      );
-      return;
-    }
-
-    // Cache current commits before entering rebase mode
-    if (!this.isRebaseMode) {
-      const commits = await repo.log({
-        range: `origin/main..${repo.state.HEAD?.name}`,
-      });
-      this.rebasedCommits = commits.map((commit) => ({
-        message: commit.message,
-        hash: commit.hash,
-        action: "pick",
-      }));
-    }
-
-    this.isRebaseMode = true;
-    this.refresh();
-  }
-
-  cancelRebase(): void {
-    this.isRebaseMode = false;
-    this.rebasedCommits = [];
-    this.refresh();
-  }
-
-  private async automateRebase(
-    repo: Repository,
-    commits: CommitItem[]
-  ): Promise<void> {
-    const fs = require("fs");
-    const os = require("os");
-    const path = require("path");
-
-    const rebaseTodoPath = path.join(os.tmpdir(), "git-rebase-todo");
-    const rewordMessagesPath = path.join(os.tmpdir(), "reword-messages");
-    const editMessageScriptPath = path.join(
-      os.tmpdir(),
-      "edit-commit-message.sh"
-    );
-
-    const editMessageScript = `#!/bin/bash
-set -e
-
-message_file="$1"
-messages_path="${rewordMessagesPath}"
-
-# If messages file doesn't exist, keep original message
-if [ ! -f "$messages_path" ]; then
-    exit 0
-fi
-
-# If messages file is empty, keep original message
-if [ ! -s "$messages_path" ]; then
-    exit 0
-fi
-
-# Read the first line and store it
-next_message=$(head -n 1 "$messages_path")
-
-if [ -z "$next_message" ]; then
-    exit 0
-fi
-
-# Write the message to the target file
-echo "$next_message" > "$message_file"
-
-# Remove the first line from messages file
-tail -n +2 "$messages_path" > "$messages_path.tmp" && mv "$messages_path.tmp" "$messages_path"
-`;
-
+  private async initializeRepo(repo: Repository) {
     try {
-      const rebaseInstructions = commits
-        .slice()
-        .reverse()
-        .map((commit) =>
-          `${commit.action} ${commit.hash} ${commit.message}`.trim()
-        )
-        .join("\n");
+      const branch = repo.state.HEAD?.name;
 
-      const rewordedMessages = commits
-        .filter((commit) => commit.action === "reword")
-        .reverse()
-        .map((commit) => commit.message)
-        .join("\n");
+      const abortController = new AbortController();
+      const stateChangeDisposer = repo.state.onDidChange(() => {
+        // Any change to the branch while initializing or initialized should
+        // trigger a new initialize
 
-      fs.writeFileSync(rebaseTodoPath, rebaseInstructions);
-      fs.writeFileSync(editMessageScriptPath, editMessageScript);
-      fs.chmodSync(editMessageScriptPath, "755");
-
-      // Only create reword messages file if there are rewording commits
-      if (rewordedMessages) {
-        fs.writeFileSync(rewordMessagesPath, rewordedMessages + "\n");
-      }
-
-      console.log("Instructions", rebaseInstructions);
-
-      this.executeGitCommand(repo, `git rebase -i HEAD~${commits.length}`, {
-        env: {
-          ...process.env,
-          GIT_SEQUENCE_EDITOR: `cat "${rebaseTodoPath}" >`,
-          GIT_EDITOR: editMessageScriptPath,
-        },
-      });
-    } catch (error) {
-      console.error("Error automating rebase:", error);
-      throw error;
-    } finally {
-      // Cleanup temporary files
-      try {
-        fs.unlinkSync(rebaseTodoPath);
-        fs.unlinkSync(editMessageScriptPath);
-        if (fs.existsSync(rewordMessagesPath)) {
-          fs.unlinkSync(rewordMessagesPath);
+        if (
+          (this.state.state === "INITIALIZING" ||
+            this.state.state === "INITIALIZED") &&
+          this.state.repo === repo &&
+          repo.state.HEAD?.name !== branch
+        ) {
+          stateChangeDisposer.dispose();
+          this.initializeRepo(repo);
         }
-      } catch (e) {
-        console.error("Error cleaning up temporary files:", e);
-      }
-    }
-  }
-
-  private executeGitCommand(
-    repo: Repository,
-    command: string,
-    options: { env?: NodeJS.ProcessEnv } = {}
-  ): string {
-    console.log(`Executing git command: ${command}`);
-    try {
-      return require("child_process").execSync(command, {
-        stdio: ["inherit", "pipe", "pipe"], // Change from 'inherit' to capture output
-        cwd: repo.rootUri.fsPath,
-        env: options.env,
-        encoding: "utf-8", // Ensure we get string output
       });
-    } catch (error: any) {
-      console.error("Git command failed:", {
-        command,
-        stderr: error.stderr?.toString(),
-        stdout: error.stdout?.toString(),
-        error: error.message,
-      });
-      throw error;
-    }
-  }
 
-  async applyRebase(): Promise<void> {
-    const gitExtension = await getGitExtension();
-    if (!gitExtension) {
-      return;
-    }
-
-    const api: API = gitExtension.getAPI(1);
-    const repo = api.repositories[0];
-    const branch = repo.state.HEAD?.name;
-
-    if (!branch) {
-      return;
-    }
-
-    const backupBranch = `backup-${branch}-${Date.now()}`;
-    console.log("Starting rebase process...");
-
-    try {
-      this.isExecutingRebase = true;
-      this.refresh();
-
-      this.executeGitCommand(repo, `git branch ${backupBranch}`);
-      console.log(`Created backup branch: ${backupBranch}`);
-
-      await this.automateRebase(repo, this.rebasedCommits);
-
-      // Store commits to be pushed instead of pushing immediately
-      this.commitsToBePushed = [...this.rebasedCommits];
-    } catch (error) {
-      console.error("Rebase failed:", error);
-
-      try {
-        this.executeGitCommand(repo, "git rebase --abort");
-      } catch (e) {
-        console.error("Failed to abort rebase:", e);
-      }
-
-      try {
-        this.executeGitCommand(repo, `git reset --hard ${backupBranch}`);
-        this.executeGitCommand(repo, `git branch -D ${backupBranch}`);
-        vscode.window.showInformationMessage(
-          "Successfully restored from backup branch"
-        );
-      } catch (e) {
-        console.error("Failed to restore from backup:", e);
-        vscode.window.showErrorMessage(
-          `Failed to restore from backup. Your backup branch is: ${backupBranch}`
-        );
-      }
-    } finally {
-      this.isExecutingRebase = false;
-      this.isRebaseMode = false;
-      this.rebasedCommits = [];
-      this.refresh();
-    }
-  }
-
-  async pushRebase(): Promise<void> {
-    if (!this.commitsToBePushed) {
-      return;
-    }
-
-    const commitsToBePushed = this.commitsToBePushed;
-    this.commitsToBePushed = null;
-
-    const gitExtension = await getGitExtension();
-    if (!gitExtension) {
-      return;
-    }
-
-    const api: API = gitExtension.getAPI(1);
-    const repo = api.repositories[0];
-    const branch = repo.state.HEAD?.name;
-
-    if (!branch) {
-      return;
-    }
-
-    try {
-      this.isPushingRebase = true;
-      this.refresh();
-
-      this.executeGitCommand(
+      this.state = {
+        state: "INITIALIZING",
         repo,
-        `git push --force-with-lease origin ${branch}`
-      );
+        abortController,
+        dispose() {
+          abortController.abort();
+        },
+      };
 
-      vscode.window.showInformationMessage(
-        "Rebase completed and pushed successfully!"
-      );
+      // We'll wait for the branch to be available
+      if (!branch) {
+        return;
+      }
+
+      const commits = await getBranchCommits(repo, branch);
+
+      if (abortController.signal.aborted) {
+        stateChangeDisposer.dispose();
+        return;
+      }
+
+      const contentProvider = this._inMemoryContentProvider;
+
+      const nicePR = new NicePR({
+        contentProvider: this._inMemoryContentProvider,
+        api: this._api,
+        repo,
+        branch,
+        commits,
+      });
+
+      const nicePRChangeDisposer = nicePR.onDidChange(() => {
+        this._onDidChange.fire();
+      });
+
+      this.state = {
+        state: "INITIALIZED",
+        repo,
+        nicePR,
+        dispose() {
+          stateChangeDisposer.dispose();
+          nicePRChangeDisposer.dispose();
+          contentProvider.clearAll();
+          nicePR.dispose();
+        },
+      };
     } catch (error) {
-      console.error("Push failed:", error);
-      this.commitsToBePushed = commitsToBePushed;
-      vscode.window.showErrorMessage(
-        "Failed to push changes. Please try again."
-      );
-    } finally {
-      this.isPushingRebase = false;
-      this.refresh();
-    }
-  }
-
-  async discardRebase(): Promise<void> {
-    if (!this.commitsToBePushed) {
-      return;
+      this.state = {
+        state: "ERROR",
+        error: String(error),
+      };
     }
 
-    const gitExtension = await getGitExtension();
-    if (!gitExtension) {
-      return;
-    }
-
-    const api: API = gitExtension.getAPI(1);
-    const repo = api.repositories[0];
-    const branch = repo.state.HEAD?.name;
-
-    if (!branch) {
-      return;
-    }
-
-    try {
-      this.executeGitCommand(repo, `git reset --hard origin/${branch}`);
-      this.commitsToBePushed = null;
-      vscode.window.showInformationMessage("Successfully discarded rebase");
-    } catch (error) {
-      console.error("Failed to discard rebase:", error);
-      vscode.window.showErrorMessage("Failed to discard rebase");
-    } finally {
-      this.refresh();
-    }
-  }
-
-  async handleDrag(
-    sources: (CommitItem | string)[],
-    dataTransfer: vscode.DataTransfer
-  ): Promise<void> {
-    if (!this.isRebaseMode) {
-      return;
-    }
-
-    const commits = sources.filter(
-      (item): item is CommitItem => typeof item !== "string"
-    );
-    dataTransfer.set(
-      "application/vnd.code.tree.nicePrView",
-      new vscode.DataTransferItem(commits)
-    );
-  }
-
-  async handleDrop(
-    target: CommitItem | string | undefined,
-    dataTransfer: vscode.DataTransfer
-  ): Promise<void> {
-    if (!this.isRebaseMode) {
-      return;
-    }
-
-    const transferItem = dataTransfer.get(
-      "application/vnd.code.tree.nicePrView"
-    );
-    const draggedCommits: CommitItem[] = transferItem?.value || [];
-
-    if (typeof target === "string" || !target || draggedCommits.length === 0) {
-      return;
-    }
-
-    const targetIndex = this.rebasedCommits.findIndex(
-      (c) => c.hash === target.hash
-    );
-    if (targetIndex === -1) {
-      return;
-    }
-
-    // Remove dragged items
-    const newCommits = this.rebasedCommits.filter(
-      (c) => !draggedCommits.some((dc) => dc.hash === c.hash)
-    );
-
-    // Insert them at the target position
-    newCommits.splice(targetIndex, 0, ...draggedCommits);
-
-    this.rebasedCommits = newCommits;
-    this.refresh();
+    this._onDidChange.fire();
   }
 }
 
 export async function activate(context: vscode.ExtensionContext) {
-  const treeDataProvider = new BranchTreeDataProvider();
-  await treeDataProvider.subscribe(context);
+  const contentProvider = new InMemoryContentProvider();
+  const initializer = await Initializer.create(context, contentProvider);
+  const rebaseTreeDataProvider = new RebaseTreeDataProvider(initializer);
 
-  // Register commands - removed moveCommitUp and moveCommitDown
   context.subscriptions.push(
-    vscode.commands.registerCommand("nicePr.toggleRebaseMode", () =>
-      treeDataProvider.toggleRebaseMode()
+    vscode.workspace.registerTextDocumentContentProvider(
+      "nice-pr-diff",
+      contentProvider
     ),
-
-    vscode.commands.registerCommand("nicePr.cancelRebase", () =>
-      treeDataProvider.cancelRebase()
+    vscode.commands.registerCommand(
+      "nicePr.showDiff",
+      (commit: CommitItem) =>
+        initializer.state.state === "INITIALIZED" &&
+        initializer.state.nicePR.showCommitDiff(commit)
     ),
+    vscode.commands.registerCommand(
+      "nicePr.showRebasedDiff",
+      (commit: CommitItem) => {
+        if (initializer.state.state !== "INITIALIZED") {
+          return;
+        }
 
-    vscode.commands.registerCommand("nicePr.acceptRebase", () =>
-      treeDataProvider.applyRebase()
+        initializer.state.nicePR.showRebasedCommitDiff(commit);
+      }
     ),
+    vscode.commands.registerCommand("nicePr.startRebase", () => {
+      if (initializer.state.state !== "INITIALIZED") {
+        return;
+      }
 
+      initializer.state.nicePR.setRebaseMode("REBASING");
+    }),
+    vscode.commands.registerCommand("nicePr.revertBranch", async () => {
+      if (initializer.state.state !== "INITIALIZED") {
+        return;
+      }
+
+      try {
+        await initializer.state.nicePR.revertToBackupBranch();
+      } catch (error) {
+        vscode.window.showWarningMessage(String(error).replace("Error: ", ""));
+      }
+    }),
+    vscode.commands.registerCommand("nicePr.suggest", () => {
+      if (initializer.state.state !== "INITIALIZED") {
+        return;
+      }
+
+      initializer.state.nicePR.setRebaseMode("SUGGESTING");
+    }),
+    vscode.commands.registerCommand("nicePr.cancelRebase", () => {
+      if (initializer.state.state !== "INITIALIZED") {
+        return;
+      }
+
+      initializer.state.nicePR.setRebaseMode("IDLE");
+    }),
+    vscode.commands.registerCommand("nicePr.approveRebase", () => {
+      if (initializer.state.state !== "INITIALIZED") {
+        return;
+      }
+
+      initializer.state.nicePR.setRebaseMode("READY_TO_PUSH");
+    }),
+    vscode.commands.registerCommand("nicePr.editRebase", () => {
+      if (initializer.state.state !== "INITIALIZED") {
+        return;
+      }
+
+      initializer.state.nicePR.setRebaseMode("REBASING");
+    }),
+    vscode.commands.registerCommand("nicePr.rebase", () => {
+      if (initializer.state.state !== "INITIALIZED") {
+        return;
+      }
+
+      initializer.state.nicePR.setRebaseMode("PUSHING");
+    }),
     vscode.commands.registerCommand(
       "nicePr.editCommitMessage",
-      (commit: CommitItem) => treeDataProvider.editCommitMessage(commit)
-    ),
+      async (rebaseCommit: RebaseCommit) => {
+        if (initializer.state.state !== "INITIALIZED") {
+          return;
+        }
 
-    vscode.commands.registerCommand("nicePr.showDiff", (commit: CommitItem) =>
-      treeDataProvider.showCommitDiff(commit)
-    ),
+        const newMessage = await vscode.window.showInputBox({
+          prompt: "Edit commit message",
+          value: rebaseCommit.message,
+        });
 
+        if (newMessage !== undefined) {
+          await initializer.state.nicePR.updateCommitMessage(
+            rebaseCommit.hash,
+            newMessage
+          );
+        }
+      }
+    ),
     vscode.commands.registerCommand(
-      "nicePr.squashCommit",
-      (commit: CommitItem) => treeDataProvider.squashCommit(commit)
+      "nicePr.removeCommit",
+      (treeItem: RebaseTreeItem) => {
+        if (initializer.state.state !== "INITIALIZED") {
+          return;
+        }
+
+        if (treeItem instanceof RebaseCommitItem) {
+          initializer.state.nicePR.removeCommit(treeItem.commit.hash);
+        }
+      }
     ),
+    vscode.commands.registerCommand("nicePr.addCommit", async () => {
+      if (initializer.state.state !== "INITIALIZED") {
+        return;
+      }
 
-    vscode.commands.registerCommand(
-      "nicePr.toggleDropCommit",
-      (commit: CommitItem) => treeDataProvider.toggleDropCommit(commit)
-    ),
+      const message = await vscode.window.showInputBox({
+        prompt: "Enter commit message",
+        placeHolder: "feat: my new feature",
+      });
 
-    vscode.commands.registerCommand("nicePr.pushRebase", async () => {
-      const answer = await vscode.window.showWarningMessage(
-        "This will rewrite commit history and force push to remote. Are you sure?",
-        "Yes",
-        "No"
-      );
-
-      if (answer === "Yes") {
-        await treeDataProvider.pushRebase();
+      if (message) {
+        initializer.state.nicePR.addNewCommit(message);
       }
     }),
+    // Register the command for internal use
+    vscode.commands.registerCommand(
+      "nicePr.showFileDiff",
+      (item: RebaseFileItem | RebaseChangeItem) => {
+        if (initializer.state.state !== "INITIALIZED") {
+          return;
+        }
 
-    vscode.commands.registerCommand("nicePr.discardRebase", async () => {
-      const answer = await vscode.window.showWarningMessage(
-        "This will discard all rebased changes. Are you sure?",
-        "Yes",
-        "No"
-      );
+        if (
+          (item instanceof RebaseFileItem && item.file.changes.length === 0) ||
+          item.ref === "trash"
+        ) {
+          return;
+        }
 
-      if (answer === "Yes") {
-        await treeDataProvider.discardRebase();
+        // Add this as well to the click of a hunk, though pass the selection
+        return initializer.state.nicePR.showFileDiff({
+          fileName: item.fileName,
+          hash: item.ref,
+          selection:
+            item instanceof RebaseChangeItem &&
+            item.change.type === FileChangeType.MODIFY &&
+            item.change.fileType === "text"
+              ? {
+                  from: item.change.newStart,
+                  to:
+                    item.change.newStart +
+                    (item.change.oldLines || item.change.newLines) -
+                    1,
+                }
+              : undefined,
+        });
       }
-    }),
-
-    vscode.workspace.onDidChangeWorkspaceFolders(async () => {
-      treeDataProvider.refresh();
-    })
+    )
   );
 }
 

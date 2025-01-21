@@ -1,0 +1,64 @@
+Commit 3
+Commit 2
+Commit 1 {
+  // Ordered list of changes
+  package.json: [{
+    type: "M",
+    hash: "c2",
+    ...hunkData
+  }, {
+    type: "M",
+    hash: "c3",
+    ...hunkData
+  }]
+}
+
+- Take note of current index of change
+- Just change the SHA, sort by SHA and get commit index
+- Find new index of change
+- Transpose and replace array [{
+  hash: "c3"
+},
+{
+  hash: "c2"
+}, {
+  hash: "c1"
+}] {
+  // Ordered list of changes
+  package.json: [{
+    fileName: "",
+    operation: "D",
+    hash: "c2",
+    oldStart: 3,
+    newStart: 3,
+    lines: ["-bar", "+baz"]
+  }, {
+    fileName: "",
+    operation: "M",
+    hash: "c2",
+    oldStart: 3,
+    newStart: 3,
+    lines: ["-foo", "+bar"]
+  }]
+}
+
+1. Prevent moving past overlapping hunks
+2. Automatically transpose overlapping hunks
+3. Merge overlapping hunks Added (null, fileName)
+
+Modified (fileName, fileName)
+
+Renamed (aFileName, bFileName)
+
+Delete (fileName, null) Commit 3
+  M README.md
+    M @@ 3,3 @@
+  M package.json
+    M @@ 3, 0 @@
+
+Commit 2
+  M package.json
+    M @@ 3, 3 @@ - M => Default
+- D => Any hunk is D
+- A => Any hunk is A and no previous A for that file
+- R => Any hunk is R and no previous R for that file

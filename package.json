@@ -1,7 +1,12 @@
 {
   "name": "nice-pr",
-  "displayName": "nice-pr",
+  "displayName": "Nice PR",
+  "publisher": "christianalfoni",
   "description": "Make your PR nice for other developers to review",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/christianalfoni/nice-pr-vscode-extension"
+  },
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.95.0"
@@ -9,7 +14,15 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "keywords": [
+    "pr",
+    "rebase",
+    "git"
+  ],
+  "preview": true,
+  "activationEvents": [
+    "onView:nicePrView"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -24,8 +37,8 @@
     "views": {
       "nice-pr-sidebar": [
         {
-          "id": "nicePrView",
-          "name": "Loading..."
+          "id": "nicePrRebaseView",
+          "name": "Initializing repository"
         }
       ]
     },
@@ -35,9 +48,13 @@
         "title": "Show commit diff"
       },
       {
-        "command": "nicePr.toggleRebaseMode",
+        "command": "nicePr.showRebasedDiff",
+        "title": "Show rebased commit diff"
+      },
+      {
+        "command": "nicePr.startRebase",
         "title": "Start Rebase",
-        "icon": "$(git-merge)"
+        "icon": "$(edit)"
       },
       {
         "command": "nicePr.cancelRebase",
@@ -45,110 +62,152 @@
         "icon": "$(close)"
       },
       {
-        "command": "nicePr.acceptRebase",
-        "title": "Accept Rebase",
+        "command": "nicePr.approveRebase",
+        "title": "Approve Rebase",
         "icon": "$(check)"
       },
       {
         "command": "nicePr.editCommitMessage",
-        "title": "Edit Commit Message",
-        "category": "Nice PR",
-        "icon": "$(edit)"
+        "title": "Edit Commit Message"
       },
       {
-        "command": "nicePr.squashCommit",
-        "title": "Squash Commit",
-        "icon": "$(eye-closed)"
-      },
-      {
-        "command": "nicePr.toggleDropCommit",
-        "title": "Toggle Drop Commit",
+        "command": "nicePr.removeCommit",
+        "title": "Remove Commit",
         "icon": "$(trash)"
       },
       {
-        "command": "nicePr.pushRebase",
-        "title": "Push Rebased Changes",
-        "icon": "$(cloud-upload)"
+        "command": "nicePr.addCommit",
+        "title": "Add New Commit",
+        "icon": "$(add)"
       },
       {
-        "command": "nicePr.discardRebase",
-        "title": "Discard Rebase",
+        "command": "nicePr.showFileDiff",
+        "title": "Show File Changes"
+      },
+      {
+        "command": "nicePr.editRebase",
+        "title": "Edit rebase",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "nicePr.rebase",
+        "title": "Rebase and push",
+        "icon": "$(repo-force-push)"
+      },
+      {
+        "command": "nicePr.suggest",
+        "title": "Suggest rebase",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "nicePr.revertBranch",
+        "title": "Revert rebase",
         "icon": "$(discard)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "nicePr.toggleRebaseMode",
-          "when": "view == nicePrView && !nicePr.isRebaseMode && !nicePr.isExecutingRebase",
+          "command": "nicePr.startRebase",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'IDLE'",
+          "group": "navigation"
+        },
+        {
+          "command": "nicePr.revertBranch",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'IDLE'",
+          "group": "navigation"
+        },
+        {
+          "command": "nicePr.suggest",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'IDLE'",
           "group": "navigation"
         },
         {
           "command": "nicePr.cancelRebase",
-          "when": "view == nicePrView && nicePr.isRebaseMode && !nicePr.isExecutingRebase",
-          "group": "navigation@1"
+          "when": "view == nicePrRebaseView && nicePr.mode == 'REBASING'",
+          "group": "navigation"
         },
         {
-          "command": "nicePr.acceptRebase",
-          "when": "view == nicePrView && nicePr.isRebaseMode && !nicePr.isExecutingRebase",
-          "group": "navigation@2"
+          "command": "nicePr.approveRebase",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'REBASING'",
+          "group": "navigation"
         },
         {
-          "command": "nicePr.pushRebase",
-          "when": "view == nicePrView && nicePr.hasPendingPush",
-          "group": "navigation@1"
+          "command": "nicePr.addCommit",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'REBASING'",
+          "group": "navigation"
         },
         {
-          "command": "nicePr.discardRebase",
-          "when": "nicePr.hasPendingPush",
+          "command": "nicePr.editRebase",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'READY_TO_PUSH'",
+          "group": "navigation"
+        },
+        {
+          "command": "nicePr.rebase",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'READY_TO_PUSH'",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
-          "command": "nicePr.editCommitMessage",
-          "when": "view == nicePrView && viewItem =~ /rebaseMode/ && !nicePr.isExecutingRebase",
-          "group": "inline"
-        },
-        {
-          "command": "nicePr.squashCommit",
-          "when": "view == nicePrView && viewItem == rebaseMode && !nicePr.isExecutingRebase",
-          "group": "inline"
-        },
-        {
-          "command": "nicePr.toggleDropCommit",
-          "when": "view == nicePrView && viewItem =~ /rebaseMode/ && !nicePr.isExecutingRebase",
-          "group": "inline"
+          "command": "nicePr.removeCommit",
+          "when": "view == nicePrRebaseView && nicePr.mode == 'REBASING' && viewItem == emptyCommit",
+          "group": "inline",
+          "title": "Remove Empty Commit"
         }
       ]
+    },
+    "configuration": {
+      "title": "Nice PR",
+      "properties": {
+        "nicePr.openAiBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "The endpoint to use with the OpenAI client",
+          "scope": "application"
+        },
+        "nicePr.openAiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API Key for rebase suggestions",
+          "scope": "application"
+        },
+        "nicePr.suggestionInstructions": {
+          "type": "string",
+          "default": "You are an assistant that rebases a git history to be reviewed on a PR by a fellow engineer. Respond with a JSON object matching the rebase schema.\n\nYou are allowed to do the following operations:\n\n- Change the order of commits\n- Move diffs to other commits by changing its hash\n- Change the message of commits\n- Add new commits by creating a random hash for it\n- Drop diffs\n\nYou are not allowed to:\n- Change the hash of commits\n- Change the hash of diffs resulting in invalid dependencies \n\nBe diligent about removing commits and trashing changes not relevant to the PR.",
+          "description": "The instructions for the LLM to generate rebase suggestions",
+          "scope": "application",
+          "editPresentation": "multilineText"
+        }
+      }
     }
   },
   "scripts": {
     "vscode:prepublish": "yarn run package",
-    "compile": "yarn run check-types && yarn run lint && node esbuild.js",
+    "compile": "yarn run check-types && node esbuild.js",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "yarn run check-types && yarn run lint && node esbuild.js --production",
+    "package": "yarn run check-types && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "yarn run compile-tests && yarn run compile && yarn run lint",
     "check-types": "tsc --noEmit",
-    "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vitest"
   },
   "devDependencies": {
-    "@types/vscode": "^1.95.0",
-    "@types/mocha": "^10.0.9",
+    "@types/diff": "^6.0.0",
     "@types/node": "20.x",
-    "@typescript-eslint/eslint-plugin": "^8.10.0",
-    "@typescript-eslint/parser": "^8.7.0",
-    "eslint": "^9.13.0",
+    "@types/vscode": "^1.95.0",
     "esbuild": "^0.24.0",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.6.3",
-    "@vscode/test-cli": "^0.0.10",
-    "@vscode/test-electron": "^2.4.1"
+    "vitest": "^2.1.8"
   },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e",
+  "dependencies": {
+    "diff": "^7.0.0",
+    "openai": "^4.77.4",
+    "parse-git-diff": "^0.0.17",
+    "zod": "^3.24.1"
+  }
 }
