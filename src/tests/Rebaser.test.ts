@@ -25,6 +25,6 @@ describe("Rebaser", () => {
       },
     ]);
 
-    expect(rebaser.getRebaseCommits()).toMatchSnapshot();
+    expect(rebaser.rebaseCommits).toMatchSnapshot();
   });
 });
