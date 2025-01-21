@@ -1,7 +1,5 @@
 # nice-pr README
 
-## How does it work
+Create nice pull requests by changing the git history using this visual tool. It can also suggest a new history.
 
-### Why we do not reach out of bounds? (Normalizing)
-
-### How we detect overlaps
+![screenshot](./screenshot.png)
