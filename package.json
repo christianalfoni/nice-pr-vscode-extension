@@ -1,7 +1,12 @@
 {
   "name": "nice-pr",
-  "displayName": "nice-pr",
+  "displayName": "Nice PR",
+  "publisher": "christianalfoni",
   "description": "Make your PR nice for other developers to review",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/christianalfoni/nice-pr-vscode-extension"
+  },
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.95.0"
@@ -9,6 +14,12 @@
   "categories": [
     "Other"
   ],
+  "keywords": [
+    "pr",
+    "rebase",
+    "git"
+  ],
+  "preview": true,
   "activationEvents": [
     "onView:nicePrView"
   ],
