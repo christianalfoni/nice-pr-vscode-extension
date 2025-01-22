@@ -164,7 +164,7 @@ export function mapChunkToFileChange({
         return acc.concat(`-${lineChange.content}`);
       }
       if (lineChange.type === "AddedLine") {
-        return acc.concat(`+ ${lineChange.content}`);
+        return acc.concat(`+${lineChange.content}`);
       }
 
       return acc;

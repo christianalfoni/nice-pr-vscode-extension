@@ -167,6 +167,8 @@ export class NicePR {
   private _repo: Repository;
   private _commits: Commit[];
   private _branch: string;
+  // TODO: Use git reflog and parse out the likely target branch
+  private _targetBranch: string = "main";
   private _stateChangeListenerDisposer: vscode.Disposable;
 
   private set mode(value: RebaseMode) {
@@ -250,6 +252,34 @@ export class NicePR {
     return this.mode.rebaser;
   }
 
+  private async checkNeedsRebaseFromTarget(): Promise<boolean> {
+    // Pull target branch to be able to diff correctly
+    await executeGitCommand(
+      this._repo,
+      `fetch origin ${this._targetBranch}:${this._targetBranch}`
+    );
+
+    // Check if we are diverging from target branch
+    const hasDivergingLogs = Boolean(
+      await executeGitCommand(this._repo, `log HEAD..${this._targetBranch}`)
+    );
+
+    if (hasDivergingLogs) {
+      const choice = await vscode.window.showWarningMessage(
+        `You need to rebase onto ${this._targetBranch} before continuing`,
+        "Rebase onto " + this._targetBranch
+      );
+
+      if (choice === "Rebase") {
+        await vscode.commands.executeCommand("git.rebase", this._repo);
+      }
+
+      return true;
+    }
+
+    return false;
+  }
+
   async setRebaseMode(mode: RebaseMode["mode"]) {
     if (this.mode.mode === "SUGGESTING") {
       return;
@@ -264,6 +294,12 @@ export class NicePR {
         break;
       }
       case "SUGGESTING": {
+        const needsRebaseFromTarget = await this.checkNeedsRebaseFromTarget();
+
+        if (needsRebaseFromTarget) {
+          return;
+        }
+
         // Show the progress indicator
         await vscode.window.withProgress(
           {
@@ -299,20 +335,9 @@ export class NicePR {
               messages: [
                 {
                   role: "system",
-                  /*
                   content: vscode.workspace
                     .getConfiguration("nicePr")
-                    .get("suggestionInstructions")!,*/
-                  content: `You are an assistant that creates a nice PR for an other engineer to review.
-                  
-Please follow these instructions:
-
-- Evaluate what commit messages and diffs are actuall relevant for a PR
-- Create new commit messages that describes the changes in a clear way. Do not create commits for debugging, linting,
-formatting or other non-functional changes
-- Evaluate what diffs are relevant for the PR and assign them to the respective generated commits
-- Diffs that can be safely ignored should be marked as dropped
-`,
+                    .get("suggestionInstructions")!,
                 },
                 {
                   role: "user",
@@ -345,6 +370,12 @@ ${JSON.stringify(diffs)}`,
         break;
       }
       case "REBASING": {
+        const needsRebaseFromTarget = await this.checkNeedsRebaseFromTarget();
+
+        if (needsRebaseFromTarget) {
+          return;
+        }
+
         if (this.mode.mode === "READY_TO_PUSH") {
           this.mode = {
             mode: "REBASING",
@@ -550,7 +581,10 @@ ${JSON.stringify(diffs)}`,
 
     const repo = this._api.repositories[0];
 
-    const mergeBase = await repo.getMergeBase("origin/main", this._branch);
+    const mergeBase = await repo.getMergeBase(
+      "origin/" + this._targetBranch,
+      this._branch
+    );
 
     if (!mergeBase) {
       throw new Error("No merge base");
@@ -581,10 +615,11 @@ ${JSON.stringify(diffs)}`,
 
     try {
       const mergeBase = await this.getInitialHash();
+
       // Use executeGitCommand to get the file content from the merge base
       return await executeGitCommand(
         this._repo,
-        `show ${mergeBase}:${oldFileName || fileName}`
+        `cat-file -p ${mergeBase}:${oldFileName || fileName}`
       );
     } catch (error) {
       console.error("Failed to get file contents:", error);
@@ -628,12 +663,14 @@ ${JSON.stringify(diffs)}`,
 
     const contentBeforeHash = rebaser.applyChanges(
       originalContent,
-      changesExludingHash
+      changesExludingHash,
+      this._repo
     );
 
     const contentInHash = rebaser.applyChanges(
       contentBeforeHash,
-      changesInHash
+      changesInHash,
+      this._repo
     );
 
     this._contentProvider.clear(leftUri);
@@ -681,8 +718,6 @@ ${JSON.stringify(diffs)}`,
     const fileStates: Record<string, string> = {};
     const commitOperations: RebaseCommitOperation[] = [];
 
-    async function getFileContents(fileName: string, hash: string) {}
-
     for (const commit of commitsToHandle) {
       const fileOperations: RebaseFileOperation[] = [];
 
@@ -707,7 +742,7 @@ ${JSON.stringify(diffs)}`,
         if (lastBinaryChange) {
           content = await executeGitCommandWithBinaryOutput(
             this._repo,
-            `show ${lastBinaryChange.originalHash}:${file.fileName}`
+            `cat-file -p ${lastBinaryChange.originalHash}:${file.fileName}`
           );
         } else {
           const updatedContents =
@@ -716,15 +751,17 @@ ${JSON.stringify(diffs)}`,
               : fileStates[file.fileName];
 
           const currentContent = await Promise.resolve(
-            updatedContents ||
-              this.getInitialFileContents(file.fileName, commit.hash)
+            typeof updatedContents === "string"
+              ? updatedContents
+              : this.getInitialFileContents(file.fileName, commit.hash)
           )
             // There is no file yet, so we use empty string as initial content
             .catch(() => "");
 
           content = fileStates[file.fileName] = rebaser.applyChanges(
             currentContent,
-            file.changes
+            file.changes,
+            this._repo
           );
         }
 
@@ -822,7 +859,7 @@ ${JSON.stringify(diffs)}`,
       await executeGitCommand(this._repo, `add .`);
       await executeGitCommand(
         this._repo,
-        `commit -m "${commitOperation.message}"`
+        `commit --no-verify -m "${commitOperation.message}"`
       );
     }
   }

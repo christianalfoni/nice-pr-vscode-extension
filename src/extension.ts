@@ -1,6 +1,13 @@
 import * as vscode from "vscode";
 
 /*
+  BUG: Before rebasing do "git fetch origin main:main" and check "git rev-parse main" to see if first commit is same sha,
+  if not trigger git extension to rebase
+  - A little bit hard to separate files from commits (same color)
+  - In review show both rebased commits and original commits to understand "the change" you are about to push
+  - Allow abort in review state as well
+  - Analytics, amplitude
+  - Update default instructions, add also a note about length of commit message
   - Rebase diff does not show as deletion
   - Option to choose how dependencies should work
       - Show warning
