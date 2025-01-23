@@ -266,12 +266,20 @@ export class NicePR {
 
     if (hasDivergingLogs) {
       const choice = await vscode.window.showWarningMessage(
-        `You need to rebase onto ${this._targetBranch} before continuing`,
-        "Rebase onto " + this._targetBranch
+        `You need to rebase onto ${this._targetBranch} before being able to edit this branch`,
+        "Rebase"
       );
 
       if (choice === "Rebase") {
-        await vscode.commands.executeCommand("git.rebase", this._repo);
+        try {
+          // @ts-ignore
+          await this._repo.repository.rebase(this._targetBranch);
+        } catch {
+          vscode.commands.executeCommand("workbench.view.scm");
+          vscode.window.showWarningMessage(
+            `Please resolve and stage conflicts to continue. Once you are done, you can change the history`
+          );
+        }
       }
 
       return true;
