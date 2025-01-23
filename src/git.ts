@@ -287,6 +287,14 @@ export interface Repository {
   commit(message: string, opts?: CommitOptions): Promise<void>;
   merge(ref: string): Promise<void>;
   mergeAbort(): Promise<void>;
+
+  rebase(branch: string, options?: PullOptions): Promise<void>;
+}
+
+export interface PullOptions {
+  unshallow?: boolean;
+  tags?: boolean;
+  readonly cancellationToken?: CancellationToken;
 }
 
 export interface RemoteSource {

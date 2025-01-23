@@ -1,5 +1,5 @@
 import { applyPatch, Hunk } from "diff";
-
+import * as vscode from "vscode";
 import {
   FileChangeType as ChangeType,
   FileChangeType,
@@ -9,6 +9,8 @@ import {
 } from "./utils.js";
 import parseGitDiff from "parse-git-diff";
 import { z } from "zod";
+import { join } from "path";
+import { Repository } from "./git.js";
 
 export const ResponseSchema = z.object({
   commits: z.array(z.string().describe("The commit message")),
@@ -648,16 +650,16 @@ export class Rebaser {
       return includedHashes.includes(change.hash);
     });
   }
-  applyChanges(document: string, changes: FileChange[]) {
-    let result = changes.reduce<string | false>(
-      (acc, change) =>
-        acc === false || !isTextFileChange(change)
-          ? acc
-          : applyPatch(acc, {
-              hunks: [change],
-            }),
-      document
-    );
+  applyChanges(document: string, changes: FileChange[], repo: Repository) {
+    let result = changes.reduce<string | false>((acc, change) => {
+      if (acc === false || !isTextFileChange(change)) {
+        return acc;
+      }
+
+      return applyPatch(acc, {
+        hunks: [change],
+      });
+    }, document);
 
     if (result === false) {
       throw new Error("Could not apply changes");
