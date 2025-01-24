@@ -1,8 +1,7 @@
 import * as vscode from "vscode";
 
 /*
-  BUG: Before rebasing do "git fetch origin main:main" and check "git rev-parse main" to see if first commit is same sha,
-  if not trigger git extension to rebase
+  - BUG: Something going wrong with multiple additions in a file when performing rebase
   - A little bit hard to separate files from commits (same color)
   - In review show both rebased commits and original commits to understand "the change" you are about to push
   - Allow abort in review state as well
@@ -70,7 +69,7 @@ class RebaseChangeItem extends vscode.TreeItem {
     }
 
     if (isTextFileChange(change)) {
-      return change.lines.join("\n");
+      return change.modifications.join("\n");
     }
 
     return "Binary";
@@ -801,11 +800,8 @@ export async function activate(context: vscode.ExtensionContext) {
             item.change.type === FileChangeType.MODIFY &&
             item.change.fileType === "text"
               ? {
-                  from: item.change.newStart,
-                  to:
-                    item.change.newStart +
-                    (item.change.oldLines || item.change.newLines) -
-                    1,
+                  from: item.change.modificationRange[0],
+                  to: item.change.modificationRange[1],
                 }
               : undefined,
         });

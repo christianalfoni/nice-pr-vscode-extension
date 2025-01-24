@@ -4,6 +4,7 @@ import { Commit, Repository } from "./git.js";
 import { ParsedDiff } from "diff";
 import {
   FileChange,
+  FileModifications,
   ModifyTextFileChange,
   RebaseCommitFileChange,
 } from "./Rebaser.js";
@@ -104,13 +105,15 @@ export function getParentCommitHash(commit: Commit) {
   return commit.hash + "^";
 }
 
+// This is used for UI color to conceptually identify additions, deletions or modifications,
+// where modifications are strictly changing existing lines
 export function getModificationTypeFromChange(
   change: ModifyTextFileChange & { fileType: "text" }
 ) {
-  if (change.oldLines === 0) {
+  if (change.linesChangedCount > 0) {
     return "ADD";
   }
-  if (change.newLines === 0) {
+  if (change.linesChangedCount < 0) {
     return "DELETE";
   }
 
@@ -147,6 +150,30 @@ export function mapChunkToFileChange({
     };
   }
 
+  const { modifications, modificationCount } = chunk.changes.reduce<{
+    modifications: FileModifications;
+    modificationCount: 0;
+  }>(
+    (acc, lineChange) => {
+      if (lineChange.type === "DeletedLine") {
+        acc.modifications.push(`-${lineChange.content}`);
+        acc.modificationCount--;
+      }
+      if (lineChange.type === "AddedLine") {
+        acc.modifications.push(`+${lineChange.content}`);
+        acc.modificationCount++;
+      }
+
+      return acc;
+    },
+    {
+      modifications: [],
+      modificationCount: 0,
+    }
+  );
+
+  const startIndex = chunk.toFileRange.start - 1;
+
   return {
     type: FileChangeType.MODIFY,
     fileType: "text",
@@ -155,20 +182,17 @@ export function mapChunkToFileChange({
     hash,
     originalHash: hash,
     path,
-    oldStart: chunk.fromFileRange.start,
-    oldLines: chunk.fromFileRange.lines,
-    newStart: chunk.toFileRange.start,
-    newLines: chunk.toFileRange.lines,
-    lines: chunk.changes.reduce<string[]>((acc, lineChange) => {
-      if (lineChange.type === "DeletedLine") {
-        return acc.concat(`-${lineChange.content}`);
-      }
-      if (lineChange.type === "AddedLine") {
-        return acc.concat(`+${lineChange.content}`);
-      }
-
-      return acc;
-    }, []),
+    modificationRange: [
+      startIndex,
+      // The range can not be smaller than [0, 0], it just means that it
+      // only adds lines
+      Math.max(
+        0,
+        startIndex + chunk.fromFileRange.lines - chunk.toFileRange.lines
+      ),
+    ],
+    modifications,
+    linesChangedCount: modificationCount,
   };
 }
 
@@ -186,15 +210,9 @@ export function isLineOverlappingWithChange(
     return false;
   }
 
-  const lineStart = previousChange.oldStart;
-  const lineChanges = previousChange.newLines - previousChange.oldLines;
-  const lineEnd = previousChange.oldStart + lineChanges;
+  const range = previousChange.modificationRange;
 
-  // When we find a dependent change, we do not use it to normalize
-  // the current change
-  if (line >= lineStart && line <= lineEnd) {
-    return true;
-  }
+  return line >= range[0] && line <= range[1];
 }
 
 export async function getBranchCommits(
