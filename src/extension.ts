@@ -1,13 +1,12 @@
 import * as vscode from "vscode";
 
 /*
-  - BUG: Something going wrong with multiple additions in a file when performing rebase
-  - A little bit hard to separate files from commits (same color)
-  - In review show both rebased commits and original commits to understand "the change" you are about to push
-  - Allow abort in review state as well
   - Analytics, amplitude
-  - Update default instructions, add also a note about length of commit message
   - Rebase diff does not show as deletion
+  
+  - Create multiple additions, deletions and a mix in the same file
+  - Verify overlapping hunks
+  
   - Option to choose how dependencies should work
       - Show warning
       - Block and show message
@@ -57,15 +56,15 @@ class CommitItem extends vscode.TreeItem {
 class RebaseChangeItem extends vscode.TreeItem {
   static getLabel(change: RebaseCommitFileChange) {
     if (change.type === FileChangeType.ADD) {
-      return "Add file";
+      return "File added";
     }
 
     if (change.type === FileChangeType.RENAME) {
-      return "Rename file from " + change.oldFileName;
+      return "File renamed from " + change.oldFileName;
     }
 
     if (change.type === FileChangeType.DELETE) {
-      return "Delete file";
+      return "File deleted";
     }
 
     if (isTextFileChange(change)) {
@@ -87,7 +86,13 @@ class RebaseChangeItem extends vscode.TreeItem {
     public readonly fileName: string,
     public readonly change: RebaseCommitFileChange
   ) {
-    super(RebaseChangeItem.getLabel(change));
+    super(
+      change.isSetBeforeDependent
+        ? `${RebaseChangeItem.getLabel(change)}
+    
+This change depends on changes from later commits`
+        : RebaseChangeItem.getLabel(change)
+    );
     this.id = "RebaseChangeItem-" + ref + "-" + fileName + "-" + change.index;
     this.iconPath = this.getIcon();
     this.contextValue = "droppableHunk";
@@ -163,7 +168,14 @@ class RebaseFileItem extends vscode.TreeItem {
     const parts = file.fileName.split("/");
     const lastFileNamePart = parts.pop() || "";
 
-    super(lastFileNamePart, vscode.TreeItemCollapsibleState.Collapsed);
+    super(
+      file.hasChangeSetBeforeDependent
+        ? `${lastFileNamePart}
+  
+This file has a change with dependencies to later commits`
+        : lastFileNamePart,
+      vscode.TreeItemCollapsibleState.Collapsed
+    );
 
     this.id = "RebaseFileItem-" + ref + "-" + file.fileName;
     this.fileName = file.fileName;
@@ -217,7 +229,15 @@ class RebaseCommitItem extends vscode.TreeItem {
     };
   }
   constructor(public readonly commit: RebaseCommit) {
-    super(commit.message, vscode.TreeItemCollapsibleState.Expanded);
+    super(
+      commit.hasChangeSetBeforeDependent
+        ? `${commit.message}
+
+This commit has a change with dependencies to later commits
+`
+        : commit.message,
+      vscode.TreeItemCollapsibleState.Expanded
+    );
 
     // Set contextValue based on whether commit has changes
     this.id = "RebaseCommitItem-" + commit.hash;
@@ -240,9 +260,8 @@ class RebaseCommitItem extends vscode.TreeItem {
 
     return new vscode.ThemeIcon(
       this.commit.files.length === 0 ? "kebab-vertical" : "git-commit",
-      this.commit.hash.startsWith("new-")
-        ? new vscode.ThemeColor("charts.orange")
-        : undefined
+      // We can check if it is a new commit by prefix of new- on commit hash
+      new vscode.ThemeColor("charts.blue")
     );
   }
 }
@@ -259,7 +278,7 @@ class RebasedCommitItem extends vscode.TreeItem {
     this.id = "RebasedCommitItem-" + commit.hash;
     this.iconPath = new vscode.ThemeIcon(
       "git-commit",
-      new vscode.ThemeColor("charts.orange")
+      new vscode.ThemeColor("charts.blue")
     );
     this.command = {
       command: "nicePr.showRebasedDiff",
@@ -279,13 +298,13 @@ type RebaseTreeItem =
   | RebaseChangeItem;
 
 class RebaseTreeDataProvider
-  implements vscode.TreeDataProvider<RebaseTreeItem>
+  implements vscode.TreeDataProvider<RebaseTreeItem | vscode.TreeItem>
 {
   private _onDidChangeTreeData = new vscode.EventEmitter<
     RebaseTreeItem | undefined
   >();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
-  private view: vscode.TreeView<RebaseTreeItem>;
+  private view: vscode.TreeView<RebaseTreeItem | vscode.TreeItem>;
 
   constructor(private initializer: Initializer) {
     this.view = vscode.window.createTreeView("nicePrRebaseView", {
@@ -300,10 +319,12 @@ class RebaseTreeDataProvider
   dragMimeTypes = ["application/vnd.code.tree.niceprdrop"] as const;
   handleDrag(sources: RebaseTreeItem[], dataTransfer: vscode.DataTransfer) {
     sources.forEach((source) => {
-      dataTransfer.set(
-        this.dragMimeTypes[0],
-        new vscode.DataTransferItem(source.toJSON())
-      );
+      if ("toJSON" in source) {
+        dataTransfer.set(
+          this.dragMimeTypes[0],
+          new vscode.DataTransferItem(source.toJSON())
+        );
+      }
     });
   }
   handleDrop(
@@ -395,7 +416,9 @@ class RebaseTreeDataProvider
   }
 
   // This is where we build up the tree items
-  async getChildren(element?: RebaseTreeItem): Promise<RebaseTreeItem[]> {
+  async getChildren(
+    element?: RebaseTreeItem
+  ): Promise<Array<RebaseTreeItem | vscode.TreeItem>> {
     if (this.initializer.state.state !== "INITIALIZED") {
       return [];
     }
@@ -416,9 +439,25 @@ class RebaseTreeDataProvider
     const rebaseCommits = rebaser.rebaseCommits;
 
     if (mode.mode === "READY_TO_PUSH") {
-      return rebaseCommits
+      const rebasedCommits = rebaseCommits
         .filter((commit) => Boolean(commit.files.length))
         .map((commit) => new RebasedCommitItem(commit));
+      const commits = this.initializer.state.nicePR.commits.map(
+        (commit) => new CommitItem(commit.message, commit.hash)
+      );
+
+      return [
+        new vscode.TreeItem(
+          "# NEW HISTORY:",
+          vscode.TreeItemCollapsibleState.None
+        ),
+        ...rebasedCommits,
+        new vscode.TreeItem(
+          "# PREVIOUS HISTORY:",
+          vscode.TreeItemCollapsibleState.None
+        ),
+        ...commits,
+      ];
     }
 
     if (!element) {

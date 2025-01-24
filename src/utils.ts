@@ -152,7 +152,7 @@ export function mapChunkToFileChange({
 
   const { modifications, modificationCount } = chunk.changes.reduce<{
     modifications: FileModifications;
-    modificationCount: 0;
+    modificationCount: number;
   }>(
     (acc, lineChange) => {
       if (lineChange.type === "DeletedLine") {
@@ -184,12 +184,10 @@ export function mapChunkToFileChange({
     path,
     modificationRange: [
       startIndex,
-      // The range can not be smaller than [0, 0], it just means that it
-      // only adds lines
-      Math.max(
-        0,
-        startIndex + chunk.fromFileRange.lines - chunk.toFileRange.lines
-      ),
+      // We do not necessarily need to create a range as big as the modification count, cause
+      // it could just be a bunch of additions, but it does not really matter, because
+      // we are just modifying the chunk and putting it back
+      startIndex + modificationCount,
     ],
     modifications,
     linesChangedCount: modificationCount,

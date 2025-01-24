@@ -280,7 +280,6 @@ export class Rebaser {
 
       // We need to keep track of the accumulated changes up to the current hash,
       // cause line changes within a hash does not affect the oldStart
-      let oldStart = 0;
       let newStart = 0;
 
       for (const previousChange of changes) {
@@ -297,17 +296,14 @@ export class Rebaser {
           break;
         }
 
-        // Changes beyond this line does not affect the starting position. We include
-        // any overlaps here, because we'll ensure order of overlaps using dependencies, which will give
-        // the same result
+        // We only want to adjust the current change if the previous change
+        // was on a line before the current change
         if (
-          currentChange.modificationRange[0] >=
-          previousChange.modificationRange[0]
+          previousChange.modificationRange[1] <=
+          currentChange.modificationRange[0]
         ) {
-          continue;
+          newStart += previousChange.linesChangedCount * -1;
         }
-
-        newStart += previousChange.linesChangedCount;
       }
 
       currentChange.modificationRange[0] += newStart;
@@ -642,7 +638,7 @@ export class Rebaser {
       const chunkSize =
         change.modificationRange[1] - change.modificationRange[0] + 1;
       const startIndex = change.modificationRange[0];
-      const chunk = lines.slice(startIndex, chunkSize);
+      const chunk = lines.splice(startIndex, chunkSize);
       let offset = 0;
 
       for (const modification of change.modifications) {
@@ -654,7 +650,7 @@ export class Rebaser {
         }
       }
 
-      lines.splice(startIndex, chunkSize, ...chunk);
+      lines.splice(startIndex, 0, ...chunk);
     }
 
     return lines.join("\n");
@@ -705,8 +701,6 @@ export class Rebaser {
 
     this._rebaseCommits = this.getRebaseCommits();
   }
-  showFileDiff() {}
-  push() {}
   getFileChangeType(fileName: string) {
     const changes = this._changes.filter((change) => change.path === fileName);
 

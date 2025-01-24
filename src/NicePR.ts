@@ -676,10 +676,6 @@ ${JSON.stringify(diffs)}`,
       changesInHash
     );
 
-    console.log("WTF", changesInHash);
-
-    console.log(contentBeforeHash, contentInHash);
-
     this._contentProvider.clear(leftUri);
     this._contentProvider.clear(rightUri);
     this._contentProvider.setContent(leftUri, contentBeforeHash);
