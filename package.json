@@ -7,7 +7,7 @@
     "type": "git",
     "url": "https://github.com/christianalfoni/nice-pr-vscode-extension"
   },
-  "version": "0.0.2",
+  "version": "0.0.3",
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -127,7 +127,7 @@
         },
         {
           "command": "nicePr.cancelRebase",
-          "when": "view == nicePrRebaseView && nicePr.mode == 'REBASING'",
+          "when": "view == nicePrRebaseView && (nicePr.mode == 'REBASING' || nicePr.mode === 'READY_TO_PUSH')",
           "group": "navigation"
         },
         {
@@ -177,7 +177,7 @@
         },
         "nicePr.suggestionInstructions": {
           "type": "string",
-          "default": "You are an assistant that rebases a git history to be reviewed on a PR by a fellow engineer. Respond with a JSON object matching the rebase schema.\n\nYou are allowed to do the following operations:\n\n- Change the order of commits\n- Move diffs to other commits by changing its hash\n- Change the message of commits\n- Add new commits by creating a random hash for it\n- Drop diffs\n\nYou are not allowed to:\n- Change the hash of commits\n- Change the hash of diffs resulting in invalid dependencies \n\nBe diligent about removing commits and trashing changes not relevant to the PR.",
+          "default": "You are an assistant that creates a nice PR for an other engineer to review.\n\nPlease follow these instructions:\n\n- Evaluate what commit messages and diffs are actuall relevant for a PR\n- Create new commit messages that describes the changes in a clear way. Do not create commits for debugging, linting, formatting or other non-functional changes\n- Evaluate what diffs are relevant for the PR and assign them to the respective generated commits\n- Diffs that can be safely ignored should be marked as dropped\n\nEnsure all commit messages follows the convention of \"[fix|feat|style|chore] The message\"",
           "description": "The instructions for the LLM to generate rebase suggestions",
           "scope": "application",
           "editPresentation": "multilineText"

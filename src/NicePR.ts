@@ -657,28 +657,23 @@ ${JSON.stringify(diffs)}`,
     const rightUri = vscode.Uri.parse(
       `nice-pr-diff://modified/${hash}/${fileName}`
     );
-
     const rebaser = this.getRebaser();
-
-    // With renames we need to get the contents by the previous file name
     const originalContent = await this.getInitialFileContents(fileName, hash);
-
+    const hashes = this._commits.map((commit) => commit.hash);
     const changes = rebaser.getChangesForFileByHash(fileName, hash);
     const changesInHash = changes.filter((change) => change.hash === hash);
-    const changesExludingHash = changes.filter(
-      (change) => change.hash !== hash
+    const changesBeforeHash = changes.filter(
+      (change) => hashes.indexOf(change.hash) > hashes.indexOf(hash)
     );
 
     const contentBeforeHash = rebaser.applyChanges(
       originalContent,
-      changesExludingHash,
-      this._repo
+      changesBeforeHash
     );
 
     const contentInHash = rebaser.applyChanges(
       contentBeforeHash,
-      changesInHash,
-      this._repo
+      changesInHash
     );
 
     this._contentProvider.clear(leftUri);
@@ -768,8 +763,7 @@ ${JSON.stringify(diffs)}`,
 
           content = fileStates[file.fileName] = rebaser.applyChanges(
             currentContent,
-            file.changes,
-            this._repo
+            file.changes
           );
         }
 

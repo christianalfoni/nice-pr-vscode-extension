@@ -1,5 +1,3 @@
-import { applyPatch, Hunk } from "diff";
-import * as vscode from "vscode";
 import {
   FileChangeType as ChangeType,
   FileChangeType,
@@ -9,8 +7,6 @@ import {
 } from "./utils.js";
 import parseGitDiff from "parse-git-diff";
 import { z } from "zod";
-import { join } from "path";
-import { Repository } from "./git.js";
 
 export const ResponseSchema = z.object({
   commits: z.array(z.string().describe("The commit message")),
@@ -47,11 +43,21 @@ export type ModifyBinaryFileChange = BaseFileChange & {
   fileType: "binary";
 };
 
-export type ModifyTextFileChange = BaseFileChange &
-  Hunk & {
-    type: ChangeType.MODIFY;
-    fileType: "text";
-  };
+export type FileModifications = Array<`+${string}` | `-${string}`>;
+
+export type ModifyTextFileChange = BaseFileChange & {
+  type: ChangeType.MODIFY;
+  fileType: "text";
+  // The actual line diffs of "-" and "+". We do not have unified diffs,
+  // so there can only be those kinds of lines
+  modifications: FileModifications;
+  // The range we need to modify to apply the modifications. When we only add,
+  // the range is [5, 5] for example, but with deletions we need to capture what
+  // we delete or modify, for example [5, 8], where we delete 2 lines and modify 1
+  modificationRange: [number, number];
+  // The number of lines being modified (Some are replaced)
+  linesChangedCount: number;
+};
 
 export type RenameFileChange = BaseFileChange & {
   type: ChangeType.RENAME;
@@ -274,7 +280,6 @@ export class Rebaser {
 
       // We need to keep track of the accumulated changes up to the current hash,
       // cause line changes within a hash does not affect the oldStart
-      let oldStart = 0;
       let newStart = 0;
 
       for (const previousChange of changes) {
@@ -291,35 +296,18 @@ export class Rebaser {
           break;
         }
 
-        // Changes beyond this line does not affect the starting position. We include
-        // any overlaps here, because we'll ensure order of overlaps, which will result
-        // in the same result
+        // We only want to adjust the current change if the previous change
+        // was on a line before the current change
         if (
-          previousChange.oldStart + previousChange.oldLines >
-          currentChange.oldStart
+          previousChange.modificationRange[1] <=
+          currentChange.modificationRange[0]
         ) {
-          continue;
-        }
-
-        const lineChanges = previousChange.newLines - previousChange.oldLines;
-
-        // If previous change is a dependency of the current change, we do not
-        // normalize, as you can not move this change in front of the previous. This
-        // manages the complicated nature of overlapping changes
-        if (currentChange.dependencies.includes(previousChange.index)) {
-          continue;
-        }
-
-        newStart += lineChanges;
-
-        // Any commits before the current hash will affect the starting position
-        if (previousChange.hash !== currentChange.hash) {
-          oldStart += lineChanges;
+          newStart += previousChange.linesChangedCount * -1;
         }
       }
 
-      currentChange.oldStart -= oldStart;
-      currentChange.newStart -= newStart;
+      currentChange.modificationRange[0] += newStart;
+      currentChange.modificationRange[1] += newStart;
     }
 
     return normalizedChanges;
@@ -358,17 +346,9 @@ export class Rebaser {
         a.fileType === "text" &&
         b.fileType === "text"
       ) {
-        // If hunks overlap sort by their creation index
-        if (a.oldStart >= b.oldStart && a.oldStart <= b.oldStart + b.oldLines) {
-          return 1;
-        } else if (
-          b.oldStart >= a.oldStart &&
-          b.oldStart <= a.oldStart + a.oldLines
-        ) {
-          return -1;
-        }
-
-        return a.oldStart - b.oldStart;
+        // We just need to sort by when they where originally created,
+        // we do not care about sorting by the actual line number
+        return a.index - b.index;
       }
 
       return bIndex - aIndex;
@@ -430,7 +410,6 @@ export class Rebaser {
       // There is a difference of how oldStart and newStart accumulates. OldStart
       // is the accumulated changes up to the hash, while NewStart is the accumulated
       // changes up to that hash + any preceeding changes within that hash
-      let currentHashLineChangesCount = 0;
       let currentLineChangesCount = 0;
       let currentHash = changesCopy[0].hash;
 
@@ -456,23 +435,21 @@ export class Rebaser {
         // as those are the only lines that affects the starting position. Also
         // we do not adjust the starting position if the previous change is a dependent
         if (
-          previousChange.oldStart < change.oldStart &&
+          change.modificationRange[0] > previousChange.modificationRange[0] &&
           !change.dependencies.includes(previousChange.index)
         ) {
           // We'll always increase the currentLineChangesCount
-          currentLineChangesCount +=
-            previousChange.newLines - previousChange.oldLines;
+          currentLineChangesCount += previousChange.linesChangedCount;
         }
 
         // But we only update the currentHashLineChangesCount if we're on a new hash
         if (previousChange.hash !== currentHash) {
           currentHash = previousChange.hash;
-          currentHashLineChangesCount = currentLineChangesCount;
         }
       }
 
-      change.oldStart += currentHashLineChangesCount;
-      change.newStart += currentLineChangesCount;
+      change.modificationRange[0] += currentLineChangesCount;
+      change.modificationRange[1] += currentLineChangesCount;
     }
 
     return changesCopy;
@@ -650,40 +627,33 @@ export class Rebaser {
       return includedHashes.includes(change.hash);
     });
   }
-  applyChanges(document: string, changes: FileChange[], repo: Repository) {
-    let result = changes.reduce<string | false>((acc, change) => {
-      if (acc === false || !isTextFileChange(change)) {
-        return acc;
+  applyChanges(document: string, changes: FileChange[]) {
+    const lines = document.length ? document.split("\n") : [];
+
+    for (const change of changes) {
+      if (!isTextFileChange(change)) {
+        continue;
       }
 
-      return applyPatch(acc, {
-        hunks: [change],
-      });
-    }, document);
+      const chunkSize =
+        change.modificationRange[1] - change.modificationRange[0] + 1;
+      const startIndex = change.modificationRange[0];
+      const chunk = lines.splice(startIndex, chunkSize);
+      let offset = 0;
 
-    if (result === false) {
-      throw new Error("Could not apply changes");
-    }
-
-    // Because we use unified=0 in the diff command, there is an issue with EOF handling. It can
-    // calculate wrong minLines, which I believe to be because of hunks normally including
-    // lines before and after the change
-    const currentLineNumber = document.split("\n").length;
-    const resultLineNumber = result.split("\n").length;
-    const expectedLineNumberChange = changes.reduce((acc, change) => {
-      if (isTextFileChange(change)) {
-        return acc + change.newLines - change.oldLines;
+      for (const modification of change.modifications) {
+        if (modification.startsWith("-")) {
+          chunk.splice(offset, 1);
+        } else if (modification.startsWith("+")) {
+          chunk.splice(offset, 0, modification.slice(1));
+          offset++;
+        }
       }
 
-      return acc;
-    }, 0);
-    const lineNumberChange = resultLineNumber - currentLineNumber;
-
-    if (expectedLineNumberChange !== lineNumberChange) {
-      result = result.split("\n").slice(0, -lineNumberChange).join("\n");
+      lines.splice(startIndex, 0, ...chunk);
     }
 
-    return result;
+    return lines.join("\n");
   }
   // Moves a commit in the array after a target hash. If after trash, it is put
   // on the first index
@@ -731,8 +701,6 @@ export class Rebaser {
 
     this._rebaseCommits = this.getRebaseCommits();
   }
-  showFileDiff() {}
-  push() {}
   getFileChangeType(fileName: string) {
     const changes = this._changes.filter((change) => change.path === fileName);
 
@@ -773,7 +741,7 @@ export class Rebaser {
           : "rename",
       lines:
         change.type === FileChangeType.MODIFY && change.fileType === "text"
-          ? change.lines
+          ? change.modifications
           : undefined,
     }));
   }
