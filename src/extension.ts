@@ -111,7 +111,7 @@ This change depends on changes from later commits`
     if (this.change.isSetBeforeDependent) {
       return new vscode.ThemeIcon(
         "warning",
-        new vscode.ThemeColor("charts.yellow")
+        new vscode.ThemeColor("charts.red")
       );
     }
 
@@ -194,7 +194,7 @@ This file has a change with dependencies to later commits`
     if (this.file.hasChangeSetBeforeDependent) {
       return new vscode.ThemeIcon(
         "warning",
-        new vscode.ThemeColor("debugTokenExpression.error")
+        new vscode.ThemeColor("charts.red")
       );
     }
     return new vscode.ThemeIcon(
@@ -254,7 +254,7 @@ This commit has a change with dependencies to later commits
     if (this.commit.hasChangeSetBeforeDependent) {
       return new vscode.ThemeIcon(
         "warning",
-        new vscode.ThemeColor("debugTokenExpression.error")
+        new vscode.ThemeColor("charts.red")
       );
     }
 
