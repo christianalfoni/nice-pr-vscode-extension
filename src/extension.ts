@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
-
 /*
-  - Analytics, amplitude
+  - Handle "sync" after rebase, or document it. Cause sync does not work after rebase,
+  you have to force push. Maybe we can rather open the conflicted diffs and handle it
+  all in the extension
   - Rebase diff does not show as deletion
   
   - Create multiple additions, deletions and a mix in the same file
@@ -29,6 +30,7 @@ import {
 } from "./utils.js";
 import { InMemoryContentProvider, NicePR } from "./NicePR.js";
 import { API, Repository } from "./git.js";
+import { init as initAnalytics, trackEvent } from "./analytics.js";
 
 class CommitItem extends vscode.TreeItem {
   toJSON() {
@@ -367,6 +369,14 @@ class RebaseTreeDataProvider
           ? target.commit.hash
           : target.ref;
       rebaser.moveCommit(sourceData.commit.hash, targetRef);
+      const hasInvalidChange = Boolean(
+        rebaser.rebaseCommits.find(
+          (commit) => commit.hasChangeSetBeforeDependent
+        )
+      );
+
+      trackEvent({ name: "moved_commit", props: { hasInvalidChange } });
+
       this._onDidChangeTreeData.fire(undefined);
       const fileNames = sourceData.commit.files.map((file) => file.fileName);
 
@@ -393,12 +403,17 @@ class RebaseTreeDataProvider
       const targetRef =
         target instanceof RebaseCommitItem ? target.commit.hash : target.ref;
 
-      if (sourceData.ref === "trash") {
-        rebaser.moveChange(sourceData.fileName, change, targetRef);
-        return;
-      }
-
       rebaser.moveChange(sourceData.fileName, change, targetRef);
+    });
+
+    const hasInvalidChange = Boolean(
+      rebaser.rebaseCommits.find((commit) => commit.hasChangeSetBeforeDependent)
+    );
+
+    trackEvent({
+      name:
+        sourceData.type === "RebaseFileItem" ? "moved_file" : "moved_change",
+      props: { hasInvalidChange },
     });
 
     this._onDidChangeTreeData.fire(undefined);
@@ -695,6 +710,8 @@ export async function activate(context: vscode.ExtensionContext) {
   const initializer = await Initializer.create(context, contentProvider);
   const rebaseTreeDataProvider = new RebaseTreeDataProvider(initializer);
 
+  initAnalytics(context);
+
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(
       "nice-pr-diff",
@@ -747,6 +764,9 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       initializer.state.nicePR.setRebaseMode("IDLE");
+      trackEvent({
+        name: "edit_commits_cancelled",
+      });
     }),
     vscode.commands.registerCommand("nicePr.approveRebase", () => {
       if (initializer.state.state !== "INITIALIZED") {
@@ -754,13 +774,30 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       initializer.state.nicePR.setRebaseMode("READY_TO_PUSH");
+      const rebaser = initializer.state.nicePR.getRebaser();
+
+      trackEvent({
+        name: "edit_commits_approved",
+        props: {
+          changesCount: rebaser.getChangesCount(),
+          trashedCount: rebaser
+            .getTrash()
+            .reduce((acc, file) => acc + file.changes.length, 0),
+        },
+      });
     }),
     vscode.commands.registerCommand("nicePr.editRebase", () => {
       if (initializer.state.state !== "INITIALIZED") {
         return;
       }
 
+      const currentMode = initializer.state.nicePR.mode.mode;
+
       initializer.state.nicePR.setRebaseMode("REBASING");
+      trackEvent({
+        name: "edited_commits",
+        props: { isInitialEdit: currentMode === "IDLE" },
+      });
     }),
     vscode.commands.registerCommand("nicePr.rebase", () => {
       if (initializer.state.state !== "INITIALIZED") {
@@ -786,6 +823,7 @@ export async function activate(context: vscode.ExtensionContext) {
             rebaseCommit.hash,
             newMessage
           );
+          trackEvent({ name: "changed_commit_message" });
         }
       }
     ),
@@ -798,6 +836,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         if (treeItem instanceof RebaseCommitItem) {
           initializer.state.nicePR.removeCommit(treeItem.commit.hash);
+          trackEvent({ name: "commit_removed" });
         }
       }
     ),
@@ -813,6 +852,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
       if (message) {
         initializer.state.nicePR.addNewCommit(message);
+        trackEvent({ name: "commit_added" });
       }
     }),
     // Register the command for internal use
