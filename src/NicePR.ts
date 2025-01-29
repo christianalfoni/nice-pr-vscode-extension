@@ -14,13 +14,12 @@ import {
 import { join } from "path";
 import OpenaI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
+import { trackEvent } from "./analytics.js";
 
 const openai = new OpenaI({
   baseURL: vscode.workspace.getConfiguration("nicePr").get("openAiBaseUrl"),
   apiKey: vscode.workspace.getConfiguration("nicePr").get("openAiApiKey"),
 });
-
-const execAsync = promisify(cp.exec);
 
 interface GitUriParams {
   path: string;
@@ -316,6 +315,7 @@ export class NicePR {
             cancellable: false,
           },
           async (progress) => {
+            const start = Date.now();
             const commitsWithDiffs = await Promise.all(
               this._commits
                 .slice()
@@ -330,48 +330,70 @@ export class NicePR {
                 )
             );
 
-            const rebaser = new Rebaser(commitsWithDiffs);
-            const diffs = rebaser.getSuggestionDiffs();
+            try {
+              const rebaser = new Rebaser(commitsWithDiffs);
+              const diffs = rebaser.getSuggestionDiffs();
 
-            /**
+              /**
              IMPROVEMENTS:
              - We could get the description of the PR?
              - Be even more concise about what relevant changes are
              */
-            const response = await openai.chat.completions.create({
-              model: "gpt-4o",
-              messages: [
-                {
-                  role: "system",
-                  content: vscode.workspace
-                    .getConfiguration("nicePr")
-                    .get("suggestionInstructions")!,
-                },
-                {
-                  role: "user",
-                  content: `These are commit message of the original commits:
+              const response = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: [
+                  {
+                    role: "system",
+                    content: vscode.workspace
+                      .getConfiguration("nicePr")
+                      .get("suggestionInstructions")!,
+                  },
+                  {
+                    role: "user",
+                    content: `These are commit message of the original commits:
                   
 ${commitsWithDiffs.map(({ commit }) => "- " + commit.message).join("\n")}
 
 And these are the diffs:
 
 ${JSON.stringify(diffs)}`,
+                  },
+                ],
+                response_format: zodResponseFormat(ResponseSchema, "rebase"),
+                temperature: 0.2,
+              });
+
+              const parsedResponse = ResponseSchema.parse(
+                JSON.parse(response.choices[0].message.content!)
+              );
+
+              rebaser.setSuggestedRebaseCommits(parsedResponse);
+
+              trackEvent({
+                name: "suggested_commits",
+                props: {
+                  duration: Date.now() - start,
+                  result: "success",
                 },
-              ],
-              response_format: zodResponseFormat(ResponseSchema, "rebase"),
-              temperature: 0.2,
-            });
+              });
 
-            const parsedResponse = ResponseSchema.parse(
-              JSON.parse(response.choices[0].message.content!)
-            );
+              this.mode = {
+                mode: "REBASING",
+                rebaser,
+              };
+            } catch (error) {
+              trackEvent({
+                name: "suggested_commits",
+                props: {
+                  result: "failure",
+                  error: String(error),
+                },
+              });
 
-            rebaser.setSuggestedRebaseCommits(parsedResponse);
-
-            this.mode = {
-              mode: "REBASING",
-              rebaser,
-            };
+              vscode.window.showErrorMessage(
+                `Failed to suggest commits: ${String(error)}`
+              );
+            }
           }
         );
 
@@ -445,11 +467,19 @@ ${JSON.stringify(diffs)}`,
             cancellable: false,
           },
           async (progress) => {
+            const start = Date.now();
             await this.rebase();
             await executeGitCommand(
               this._repo,
               `push origin ${this._branch} --force-with-lease`
             );
+            trackEvent({
+              name: "pushed_to_remote",
+              props: {
+                result: "success",
+                duration: Date.now() - start,
+              },
+            });
             this.setRebaseMode("IDLE");
           }
         );
@@ -466,6 +496,8 @@ ${JSON.stringify(diffs)}`,
 
     rebaser.addCommit(message);
 
+    trackEvent({ name: "commit_added" });
+
     this._onDidChange.fire();
   }
 
@@ -473,6 +505,7 @@ ${JSON.stringify(diffs)}`,
     const rebaser = this.getRebaser();
 
     rebaser.removeCommit(hash);
+    trackEvent({ name: "commit_removed" });
 
     this._onDidChange.fire();
   }
