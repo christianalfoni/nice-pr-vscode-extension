@@ -106,6 +106,7 @@ export class Rebaser {
   private _commits: Commit[] = [];
   private _changes: FileChange[];
   private _rebaseCommits: RebaseCommit[] = [];
+  private _changesCount = 0;
   get rebaseCommits() {
     return this._rebaseCommits;
   }
@@ -556,6 +557,9 @@ export class Rebaser {
   private generateHash() {
     return "new-" + Math.random().toString(36).substring(2, 15);
   }
+  getChangesCount() {
+    return this._changesCount;
+  }
   addCommit(message: string) {
     const hash = this.generateHash();
 
@@ -580,6 +584,7 @@ export class Rebaser {
     const index = this._commits.indexOf(commit);
     this._commits.splice(index, 1);
     this._rebaseCommits = this.getRebaseCommits();
+    this._changesCount++;
   }
   updateCommitMessage(hash: string, newMessage: string) {
     const commit = this._commits.find((commit) => commit.hash === hash);
@@ -591,13 +596,7 @@ export class Rebaser {
     commit.message = newMessage;
 
     this._rebaseCommits = this.getRebaseCommits();
-  }
-  toggleRebase() {
-    if (this._isRebasing) {
-      this._isRebasing = false;
-    } else {
-      this._isRebasing = true;
-    }
+    this._changesCount++;
   }
   getChangesForFile(fileName: string) {
     const fileChanges = this._changes.filter(
@@ -693,6 +692,7 @@ export class Rebaser {
     this.sortChanges(this._changes);
 
     this._rebaseCommits = this.getRebaseCommits();
+    this._changesCount++;
   }
   // Change to using the index, which should be called changeIndex
   moveChange(fileName: string, changeRef: FileChange, targetHash: string) {
@@ -701,6 +701,7 @@ export class Rebaser {
     this.sortChanges(this._changes);
 
     this._rebaseCommits = this.getRebaseCommits();
+    this._changesCount++;
   }
   getFileChangeType(fileName: string) {
     const changes = this._changes.filter((change) => change.path === fileName);
