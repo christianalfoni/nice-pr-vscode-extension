@@ -280,7 +280,7 @@ export class Rebaser {
 
       // We need to keep track of the accumulated changes up to the current hash,
       // cause line changes within a hash does not affect the oldStart
-      let newStart = 0;
+      let normalizeOffset = 0;
 
       for (const previousChange of changes) {
         // We only normalize actual text changes
@@ -299,15 +299,17 @@ export class Rebaser {
         // We only want to adjust the current change if the previous change
         // was on a line before the current change
         if (
-          previousChange.modificationRange[1] <=
+          previousChange.modificationRange[0] <=
           currentChange.modificationRange[0]
         ) {
-          newStart += previousChange.linesChangedCount * -1;
+          // We adjust the range as if the previous changes did not happen. We do this by simply
+          // reversing the count of lines changed
+          normalizeOffset += previousChange.linesChangedCount * -1;
         }
       }
 
-      currentChange.modificationRange[0] += newStart;
-      currentChange.modificationRange[1] += newStart;
+      currentChange.modificationRange[0] += normalizeOffset;
+      currentChange.modificationRange[1] += normalizeOffset;
     }
 
     return normalizedChanges;
@@ -438,11 +440,10 @@ export class Rebaser {
           change.modificationRange[0] > previousChange.modificationRange[0] &&
           !change.dependencies.includes(previousChange.index)
         ) {
-          // We'll always increase the currentLineChangesCount
+          // We adjust the range by now applying the actual changes before this change
           currentLineChangesCount += previousChange.linesChangedCount;
         }
 
-        // But we only update the currentHashLineChangesCount if we're on a new hash
         if (previousChange.hash !== currentHash) {
           currentHash = previousChange.hash;
         }

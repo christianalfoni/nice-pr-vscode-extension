@@ -378,36 +378,50 @@ ${JSON.stringify(diffs)}`,
         break;
       }
       case "REBASING": {
-        const needsRebaseFromTarget = await this.checkNeedsRebaseFromTarget();
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Verifying ${this._branch} for rebase...`,
+            cancellable: false,
+          },
+          async (progress) => {
+            const needsRebaseFromTarget =
+              // Optimise this to first to a quick check and only pull if differ
+              await this.checkNeedsRebaseFromTarget();
 
-        if (needsRebaseFromTarget) {
-          return;
-        }
+            if (needsRebaseFromTarget) {
+              return;
+            }
 
-        if (this.mode.mode === "READY_TO_PUSH") {
-          this.mode = {
-            mode: "REBASING",
-            rebaser: this.mode.rebaser,
-          };
-          return;
-        }
+            if (this.mode.mode === "READY_TO_PUSH") {
+              this.mode = {
+                mode: "REBASING",
+                rebaser: this.mode.rebaser,
+              };
+              return;
+            }
 
-        const diffs = await Promise.all(
-          this._commits
-            .slice()
-            .reverse()
-            .map((commit) =>
-              executeGitCommand(
-                this._repo,
-                `diff --unified=0 ${getParentCommitHash(commit)} ${commit.hash}`
-              ).then((diff) => ({ commit, diff }))
-            )
+            const diffs = await Promise.all(
+              this._commits
+                .slice()
+                .reverse()
+                .map((commit) =>
+                  executeGitCommand(
+                    this._repo,
+                    `diff --unified=0 ${getParentCommitHash(commit)} ${
+                      commit.hash
+                    }`
+                  ).then((diff) => ({ commit, diff }))
+                )
+            );
+
+            this.mode = {
+              mode: "REBASING",
+              rebaser: new Rebaser(diffs),
+            };
+          }
         );
 
-        this.mode = {
-          mode: "REBASING",
-          rebaser: new Rebaser(diffs),
-        };
         break;
       }
       case "READY_TO_PUSH": {

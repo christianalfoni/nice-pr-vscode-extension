@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 
 /*
-  - Analytics, amplitude
+  - When verifing edit, do a quick check first
+  - When reverting, push to remote
   - Rebase diff does not show as deletion
   
   - Create multiple additions, deletions and a mix in the same file

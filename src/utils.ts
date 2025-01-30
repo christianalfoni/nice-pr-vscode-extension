@@ -150,29 +150,40 @@ export function mapChunkToFileChange({
     };
   }
 
-  const { modifications, modificationCount } = chunk.changes.reduce<{
-    modifications: FileModifications;
-    modificationCount: number;
-  }>(
-    (acc, lineChange) => {
-      if (lineChange.type === "DeletedLine") {
-        acc.modifications.push(`-${lineChange.content}`);
-        acc.modificationCount--;
-      }
-      if (lineChange.type === "AddedLine") {
-        acc.modifications.push(`+${lineChange.content}`);
-        acc.modificationCount++;
-      }
+  const { modifications, modificationCount, linesRemoved } =
+    chunk.changes.reduce<{
+      modifications: FileModifications;
+      modificationCount: number;
+      linesRemoved: number;
+    }>(
+      (acc, lineChange) => {
+        if (lineChange.type === "DeletedLine") {
+          acc.modifications.push(`-${lineChange.content}`);
+          acc.modificationCount--;
+          acc.linesRemoved++;
+        }
+        if (lineChange.type === "AddedLine") {
+          acc.modifications.push(`+${lineChange.content}`);
+          acc.modificationCount++;
+        }
 
-      return acc;
-    },
-    {
-      modifications: [],
-      modificationCount: 0,
-    }
-  );
+        return acc;
+      },
+      {
+        modifications: [],
+        modificationCount: 0,
+        linesRemoved: 0,
+      }
+    );
 
-  const startIndex = chunk.toFileRange.start - 1;
+  let startIndex = chunk.toFileRange.start;
+
+  // We need to adjust to index based lines, but this is only necesary when lines where replaced
+  // or added, because when removing lines the "start" becomes the previous line (Which happens to
+  // be the correct index)
+  if (chunk.toFileRange.lines) {
+    startIndex -= 1;
+  }
 
   return {
     type: FileChangeType.MODIFY,
@@ -184,10 +195,10 @@ export function mapChunkToFileChange({
     path,
     modificationRange: [
       startIndex,
-      // We do not necessarily need to create a range as big as the modification count, cause
-      // it could just be a bunch of additions, but it does not really matter, because
-      // we are just modifying the chunk and putting it back
-      startIndex + modificationCount,
+      // We need to keep track of lines removed to capture a range that includes
+      // any replacements and removals. Since the range always capture one line,
+      // we need to adjust lines removed to include that first line
+      linesRemoved ? startIndex + linesRemoved - 1 : startIndex,
     ],
     modifications,
     linesChangedCount: modificationCount,
