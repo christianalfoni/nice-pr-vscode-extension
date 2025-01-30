@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 /*
+  - When verifing edit, do a quick check first
+  - When reverting, push to remote
   - Handle "sync" after rebase, or document it. Cause sync does not work after rebase,
   you have to force push. Maybe we can rather open the conflicted diffs and handle it
   all in the extension
